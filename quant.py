@@ -49,15 +49,31 @@ def _is_hk(code: str) -> bool:
 
 
 def _market(code: str) -> tuple:
-    """返回 (exchange, clean_code, is_hk)"""
+    """返回 (exchange, clean_code, is_hk)
+    支持显式前缀：
+      sh:600519 / sz:000001 / hk:00518
+    隐式推断：
+      6xx / 9xx -> sh
+      0xx / 3xx -> sz
+      5 位 0 开头 -> hk（港股）
+    """
     code = code.strip()
-    if code.lower().startswith("hk"):
-        return "hk", code[2:], True
-    code_clean = code.lstrip("sh").lstrip("sz")
-    if code_clean.startswith(("6", "9")) or (len(code_clean) == 5 and code_clean.startswith("0")):
-        # 5位0开头也可能是港股
-        if len(code_clean) == 5 and code_clean.startswith("0"):
+    if ":" in code:
+        prefix, code_clean = code.split(":", 1)
+        prefix = prefix.lower()
+        if prefix == "hk":
             return "hk", code_clean, True
+        if prefix == "sh":
+            return "sh", code_clean, False
+        if prefix == "sz":
+            return "sz", code_clean, False
+        raise ValueError(f"未知市场前缀: {prefix}")
+    code_clean = code
+    if code_clean.startswith("hk"):
+        return "hk", code_clean[2:], True
+    if len(code_clean) == 5 and code_clean.startswith("0"):
+        return "hk", code_clean, True
+    if code_clean.startswith(("6", "9")):
         return "sh", code_clean, False
     return "sz", code_clean, False
 
@@ -650,11 +666,11 @@ def run_single(args):
         print("\n最近 5 笔交易:")
         print(trades.tail(5).to_string(index=False))
 
-    save = args.save or f"{args.code}_{args.strategy}_{args.start}_{args.end}.png"
+    save = args.save or f"{args.code.replace(':', '_')}_{args.strategy}_{args.start}_{args.end}.png"
     plot_results(df, args.code, args.strategy, metrics, save_path=save)
 
     if args.export:
-        export_results(df, trades, metrics, args.code, args.strategy)
+        export_results(df, trades, metrics, args.code.replace(':', '_'), args.strategy)
 
 
 def run_compare(args):

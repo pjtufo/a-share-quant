@@ -5,7 +5,8 @@
 ## 功能特性
 
 - **5 种内置策略**：双均线、MACD、布林带、RSI、海龟策略
-- **A 股 + 港股**：自动识别市场，腾讯 ifzq 免费数据源，无需 API Key
+- **三市场支持**：显式前缀 `sh:`、`sz:`、`hk:`，无需记忆规则
+- **A 股 + 港股**：腾讯 ifzq 免费数据源，无需 API Key
 - **回测引擎**：含佣金、印花税、滑点，整手/碎股适配
 - **风控模块**：止损、止盈、最大回撤熔断、ATR 动态仓位
 - **参数优化**：网格搜索最优参数组合，按 Sharpe / 收益率 / 最大回撤排序
@@ -29,8 +30,17 @@ pip install pandas numpy matplotlib requests
 ### 单股回测（双均线）
 
 ```bash
-python quant.py --code 600519 --strategy dual_ma
+# A股沪市（sh）
+python quant.py --code sh:600519 --strategy dual_ma
+
+# A股深市（sz）
+python quant.py --code sz:000858 --strategy dual_ma
+
+# 港股（hk）
+python quant.py --code hk:00518 --strategy turtle
 ```
+
+> 不写前缀也能运行：`600519` 自动识别为沪市，`000858` 自动识别为深市，`00518` 自动识别为港股。建议用显式前缀避免歧义。
 
 ### 指定均线参数
 
@@ -47,7 +57,7 @@ python quant.py --code 000001 --strategy rsi --stop -0.05 --take 0.15 --export
 ### 多股对比
 
 ```bash
-python quant.py --code 000001,600519,000858 --compare
+python quant.py --code sh:000001,sh:600519,sz:000858 --compare
 ```
 
 ### 参数优化（网格搜索）
