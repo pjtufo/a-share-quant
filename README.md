@@ -31,16 +31,16 @@ pip install pandas numpy matplotlib requests
 
 ```bash
 # A股沪市（sh）
-python quant.py --code sh:600519 --strategy dual_ma
+python quant.py --code sh.600519 --strategy dual_ma
 
 # A股深市（sz）
-python quant.py --code sz:000858 --strategy dual_ma
+python quant.py --code sz.000858 --strategy dual_ma
 
 # 港股（hk）
-python quant.py --code hk:00518 --strategy turtle
+python quant.py --code hk.00518 --strategy turtle
 ```
 
-> 不写前缀也能运行：`600519` 自动识别为沪市，`000858` 自动识别为深市，`00518` 自动识别为港股。建议用显式前缀避免歧义。
+> 不写前缀也能运行：`600519` 自动识别为沪市，`000858` 自动识别为深市，`00518` 自动识别为港股。显式前缀用点号 `.` 更易输入，旧格式冒号 `:` 仍然兼容。
 
 ### 指定均线参数
 

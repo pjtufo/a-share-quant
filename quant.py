@@ -51,13 +51,25 @@ def _is_hk(code: str) -> bool:
 def _market(code: str) -> tuple:
     """返回 (exchange, clean_code, is_hk)
     支持显式前缀：
-      sh:600519 / sz:000001 / hk:00518
+      sh.600519 / sz.000001 / hk.00518
+    也兼容旧格式 sh:600519 / sz:000001 / hk:00518
     隐式推断：
       6xx / 9xx -> sh
       0xx / 3xx -> sz
       5 位 0 开头 -> hk（港股）
     """
     code = code.strip()
+    # 优先匹配点号分隔
+    if "." in code:
+        prefix, code_clean = code.split(".", 1)
+        prefix = prefix.lower()
+        if prefix == "hk":
+            return "hk", code_clean, True
+        if prefix == "sh":
+            return "sh", code_clean, False
+        if prefix == "sz":
+            return "sz", code_clean, False
+        raise ValueError(f"未知市场前缀: {prefix}")
     if ":" in code:
         prefix, code_clean = code.split(":", 1)
         prefix = prefix.lower()
