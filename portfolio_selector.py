@@ -68,7 +68,7 @@ def _is_hk(code: str) -> bool:
         return code.split(".")[0].lower() == "hk"
     if code.startswith("hk"):
         return True
-    if len(code) == 5 and code.startswith("0"):
+    if len(code) == 5 and code.startswith(("0",)):
         return True
     return False
 
@@ -88,6 +88,26 @@ def _exchange(code: str) -> str:
     if c.startswith(("6", "9")):
         return "sh"
     return "sz"
+
+
+def fetch_name(code: str) -> str:
+    """获取股票中文名称（腾讯qt接口）"""
+    clean = _clean_code(code)
+    is_hk = _is_hk(code)
+    try:
+        if is_hk:
+            url = f"https://qt.gtimg.cn/q=hk{clean}"
+        else:
+            ex = _exchange(code)
+            url = f"https://qt.gtimg.cn/q={ex}{clean}"
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        text = resp.text
+        match = re.search(r'v_(?:sh|sz|hk)(\d+)="[^~]*~([^~]+)~', text)
+        if match:
+            return match.group(2)
+    except Exception:
+        pass
+    return code
 
 
 def fetch_price(code: str, start: str, end: str) -> pd.DataFrame:

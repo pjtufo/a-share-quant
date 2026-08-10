@@ -32,7 +32,7 @@ import pandas as pd
 # ──────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from portfolio_selector import (
-    fetch_price, score_stock, build_portfolio,
+    fetch_price, fetch_name, score_stock, build_portfolio,
     fetch_macro, score_macro, fetch_news,
     backtest_portfolio, generate_report, plot_portfolio, plot_score_breakdown,
     monitor_news, DEFAULT_POOL,
@@ -146,7 +146,8 @@ class PoolPanel(ttk.Frame):
         for item in self.tree.get_children():
             self.tree.delete(item)
         for code in self.pool_list:
-            self.tree.insert("", tk.END, values=(code, ""))
+            name = fetch_name(code)
+            self.tree.insert("", tk.END, values=(code, name))
 
     def add_stock(self):
         text = self.entry.get().strip()
@@ -434,10 +435,11 @@ class ScorePanel(ttk.Frame):
         scrollbar = ttk.Scrollbar(table_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        columns = ("code", "score", "trend", "macd", "rsi", "vol", "volatility")
+        columns = ("code", "name", "score", "trend", "macd", "rsi", "vol", "volatility")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings",
                                  yscrollcommand=scrollbar.set, height=12)
         self.tree.heading("code", text="代码")
+        self.tree.heading("name", text="名称")
         self.tree.heading("score", text="综合评分")
         self.tree.heading("trend", text="趋势")
         self.tree.heading("macd", text="MACD")
@@ -446,7 +448,8 @@ class ScorePanel(ttk.Frame):
         self.tree.heading("volatility", text="波动率")
         for col in columns:
             self.tree.column(col, width=80, anchor=tk.CENTER)
-        self.tree.column("code", width=120)
+        self.tree.column("code", width=100)
+        self.tree.column("name", width=120)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.tree.yview)
 
@@ -492,8 +495,9 @@ class ScorePanel(ttk.Frame):
         for data in scores_data:
             score = data["score"]
             tag = "positive" if score > 0.3 else "negative" if score < 0 else "neutral"
+            name = fetch_name(data["code"])
             self.tree.insert("", tk.END, values=(
-                data["code"], f"{score:.3f}", f"{data['trend']:.2f}",
+                data["code"], name, f"{score:.3f}", f"{data['trend']:.2f}",
                 f"{data['macd']:.2f}", f"{data['rsi']:.2f}",
                 f"{data['vol']:.2f}", f"{data['volatility']:.2f}"
             ), tags=(tag,))
@@ -710,10 +714,11 @@ class PortfolioApp:
                 with open(report_path, "w", encoding="utf-8") as f:
                     f.write(generate_report(pd.DataFrame(), {}, pool, config["method"], macro_score))
                     f.write("\n## 当前建议组合\n\n")
-                    f.write("| 代码 | 评分 | 权重 |\n|---|---|---|\n")
+                    f.write("| 代码 | 名称 | 评分 | 权重 |\n|---|---|---|---|\n")
                     for code, w in sorted(weights.items(), key=lambda x: -x[1]):
                         s = scores.get(code, 0)
-                        f.write(f"| {code} | {s:.3f} | {w*100:.1f}% |\n")
+                        name = fetch_name(code)
+                        f.write(f"| {code} | {name} | {s:.3f} | {w*100:.1f}% |\n")
 
                 score_path = os.path.join(self.report_dir, "portfolio_scores.png")
                 plot_score_breakdown(scores, save_path=score_path)
