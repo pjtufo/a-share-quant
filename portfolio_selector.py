@@ -33,6 +33,7 @@ import warnings
 import numpy as np
 import pandas as pd
 import requests
+import akshare as ak
 from scipy.optimize import minimize
 
 warnings.filterwarnings("ignore")
@@ -58,6 +59,22 @@ GEOPOLITICAL_KEYWORDS = [
     "地缘政治", "北约", "俄罗斯", "乌克兰", "中东",
     "台湾", "南海", "朝鲜", "伊朗", "以色列",
     "供应链", "脱钩", "技术封锁", "出口管制",
+]
+MILITARY_KEYWORDS = [
+    "军事", "演习", "导弹", "航母", "战机", "国防",
+    "军队", "战区", "基地", "武器", "核", "无人机",
+    "俄乌", "哈马斯", "真主党", "美军", "解放军",
+]
+INDUSTRY_KEYWORDS = [
+    "产业链", "供应链", "上游", "下游", "芯片", "半导体",
+    "光伏", "风电", "锂电", "新能源汽车", "电池",
+    "稀土", "钢铁", "煤炭", "化工", "水泥",
+    "医药", "创新药", "CXO", "医疗器械",
+    "房地产", "基建", "建材",
+    "AI", "人工智能", "算力", "数据", "大模型",
+    "消费", "白酒", "食品", "饮料",
+    "金融", "银行", "保险", "证券",
+    "出口", "进口", "关税", "贸易",
 ]
 
 # ──────────────────────────────────────────────────────────────
@@ -110,7 +127,7 @@ def fetch_name(code: str) -> str:
     return code
 
 
-def fetch_price(code: str, start: str, end: str) -> pd.DataFrame:
+def fetch_price(code: str, start: str, end: str, log_callback=None) -> pd.DataFrame:
     """获取日线数据"""
     import akshare as ak
     clean = _clean_code(code)
@@ -129,10 +146,16 @@ def fetch_price(code: str, start: str, end: str) -> pd.DataFrame:
                     df["date"] = pd.to_datetime(df["date"])
                     df.sort_values("date", inplace=True)
                     df.reset_index(drop=True, inplace=True)
+                    if log_callback:
+                        log_callback(f"[完成] {code} | {start}~{end} | 港股 | {len(df)} bars")
                     return df
-            except Exception:
+            except Exception as e:
+                if log_callback:
+                    log_callback(f"[失败] {code} | {start}~{end} | 港股 | {str(e)[:40]}")
                 if attempt < 2:
                     time.sleep(2)
+        if log_callback:
+            log_callback(f"[跳过] {code} | {start}~{end} | 数据不足")
         return pd.DataFrame()
 
     ex = _exchange(code)
@@ -148,8 +171,10 @@ def fetch_price(code: str, start: str, end: str) -> pd.DataFrame:
             try:
                 url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
                        f"?param={symbol},day,{beg},{ed},1000,qfq")
+                t0 = time.time()
                 r = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
                                   timeout=15)
+                dt_ms = int((time.time() - t0) * 1000)
                 r.raise_for_status()
                 jd = r.json()
                 data = jd.get("data")
@@ -161,8 +186,14 @@ def fetch_price(code: str, start: str, end: str) -> pd.DataFrame:
                 else:
                     klines = []
                 chunks.extend(klines)
+                size_kb = len(r.content) // 1024
+                if log_callback:
+                    log_callback(f"[下载] {code} | {beg}~{ed} | {len(klines)} bars | {size_kb}KB | {dt_ms}ms | 200")
                 break
-            except Exception:
+            except Exception as e:
+                dt_ms = int((time.time() - t0) * 1000) if 't0' in dir() else 0
+                if log_callback:
+                    log_callback(f"[失败] {code} | {beg}~{ed} | {str(e)[:40]} | {dt_ms}ms")
                 if attempt < 2:
                     time.sleep(2)
         cur = nxt
@@ -177,12 +208,12 @@ def fetch_price(code: str, start: str, end: str) -> pd.DataFrame:
         rows.append({"date": pd.to_datetime(ds), "open": float(k[1]), "close": float(k[2]),
                       "high": float(k[3]), "low": float(k[4]), "volume": float(k[5])})
     if not rows:
+        if log_callback:
+            log_callback(f"[跳过] {code} | {start}~{end} | 无数据")
         return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df.sort_values("date", inplace=True)
-    df.drop_duplicates(subset=["date"], keep="first", inplace=True)
-    df.reset_index(drop=True, inplace=True)
-    return df
+    if log_callback:
+        log_callback(f"[完成] {code} | {start}~{end} | {len(rows)} bars")
+    return pd.DataFrame(rows)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -247,8 +278,10 @@ def fetch_macro(start: str, end: str) -> dict[str, pd.DataFrame]:
 
 
 def fetch_news(max_items: int = 50) -> pd.DataFrame:
-    """获取实时新闻"""
+    """获取实时新闻，并分类标签（多源回退）"""
     news_list = []
+
+    # 来源1：财联社电报（可能失效）
     try:
         url = "https://www.cls.cn/nodeapi/updateTelegraphList"
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.cls.cn/"}
@@ -258,13 +291,64 @@ def fetch_news(max_items: int = 50) -> pd.DataFrame:
                              timeout=15)
         data = resp.json()
         rolls = data.get("data", {}).get("roll_data", [])
+        if not rolls:
+            rolls = data.get("data", {}).get("list", [])
         for item in rolls:
             content = item.get("title", "") + " " + item.get("content", "")
-            news_list.append({"time": item.get("ctime", ""), "content": content, "source": "财联社"})
+            ctime = item.get("ctime", "")
+            tags = []
+            c = content.lower()
+            for kw in GEOPOLITICAL_KEYWORDS:
+                if kw in c:
+                    tags.append("地缘政治")
+                    break
+            for kw in MILITARY_KEYWORDS:
+                if kw in c:
+                    tags.append("军事突发")
+                    break
+            for kw in INDUSTRY_KEYWORDS:
+                if kw in c:
+                    tags.append("产业链")
+                    break
+            if not tags:
+                tags.append("其他")
+            news_list.append({
+                "time": ctime, "content": content, "source": "财联社", "tags": ",".join(tags)
+            })
     except Exception:
         pass
 
-    # 回退：腾讯新闻
+    # 来源2：财联社 `stock_news_main_cx`（更稳定）
+    if len(news_list) < 5:
+        try:
+            df_cx = ak.stock_news_main_cx()
+            if df_cx is not None and not df_cx.empty:
+                for _, row in df_cx.head(max_items).iterrows():
+                    content = str(row.get("summary", ""))
+                    tag_raw = str(row.get("tag", ""))
+                    tags = [tag_raw] if tag_raw else ["其他"]
+                    c = content.lower()
+                    for kw in GEOPOLITICAL_KEYWORDS:
+                        if kw in c and "地缘政治" not in tags:
+                            tags.append("地缘政治")
+                            break
+                    for kw in MILITARY_KEYWORDS:
+                        if kw in c and "军事突发" not in tags:
+                            tags.append("军事突发")
+                            break
+                    for kw in INDUSTRY_KEYWORDS:
+                        if kw in c and "产业链" not in tags:
+                            tags.append("产业链")
+                            break
+                    if len(tags) == 1:
+                        tags = ["其他"]
+                    news_list.append({
+                        "time": "", "content": content, "source": "财联社CX", "tags": ",".join(tags)
+                    })
+        except Exception:
+            pass
+
+    # 来源3：腾讯新闻
     if len(news_list) < 5:
         try:
             resp = requests.get("https://news.qq.com/", headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
@@ -273,7 +357,29 @@ def fetch_news(max_items: int = 50) -> pd.DataFrame:
             for t in titles[:20]:
                 clean = re.sub(r'<[^>]+>', '', t).strip()
                 if clean and len(clean) > 5:
-                    news_list.append({"time": "", "content": clean, "source": "腾讯新闻"})
+                    news_list.append({"time": "", "content": clean, "source": "腾讯新闻", "tags": "其他"})
+        except Exception:
+            pass
+
+    # 来源4：个股新闻（东方财富，按 stock_news_em）
+    if len(news_list) < 5:
+        try:
+            df_em = ak.stock_news_em(symbol="600519")
+            if df_em is not None and not df_em.empty:
+                for _, row in df_em.head(max_items).iterrows():
+                    content = str(row.get("新闻标题", "")) + " " + str(row.get("新闻内容", ""))
+                    pub = str(row.get("发布时间", ""))
+                    tags = []
+                    c = content.lower()
+                    for kw in INDUSTRY_KEYWORDS:
+                        if kw in c:
+                            tags.append("产业链")
+                            break
+                    if not tags:
+                        tags.append("其他")
+                    news_list.append({
+                        "time": pub, "content": content, "source": "东方财富", "tags": ",".join(tags)
+                    })
         except Exception:
             pass
 
@@ -281,6 +387,129 @@ def fetch_news(max_items: int = 50) -> pd.DataFrame:
     if not df.empty:
         df["time"] = pd.to_datetime(df["time"], errors="coerce")
     return df
+
+
+# ──────────────────────────────────────────────────────────────
+# 选股分析：股东 + 资金流向
+# ──────────────────────────────────────────────────────────────
+def analyze_holder(code: str) -> dict:
+    """股东数量变化分析，返回近期股东总数变化"""
+    result = {
+        "code": code,
+        "shareholder_count_now": None,
+        "shareholder_count_prev": None,
+        "shareholder_change": None,
+        "holder_concentration": None,
+        "updated_at": None,
+    }
+    try:
+        clean = code.split(".")[-1] if "." in code else code
+        df = ak.stock_main_stock_holder(stock=clean)
+        if df is None or df.empty:
+            return result
+
+        # 清洗日期，按截至日期聚合去重
+        date_col = "截至日期" if "截至日期" in df.columns else "公告日期"
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=[date_col, "股东总数"])
+        if df.empty:
+            return result
+        agg = df.groupby(date_col)["股东总数"].first().sort_index(ascending=False)
+
+        if len(agg) < 2:
+            return result
+
+        cnt_now = float(agg.iloc[0])
+        cnt_prev = float(agg.iloc[1])
+
+        result["shareholder_count_now"] = int(cnt_now)
+        result["shareholder_count_prev"] = int(cnt_prev)
+        result["shareholder_change"] = cnt_now - cnt_prev
+        result["updated_at"] = str(agg.index[0].date())
+        result["holder_concentration"] = f"{(cnt_now / max(cnt_prev, 1) - 1) * 100:.1f}%"
+    except Exception:
+        pass
+    return result
+
+
+def analyze_fund_flow(code: str) -> dict:
+    """大单/超大单资金流向分析（东方财富接口，可能不稳定）"""
+    result = {
+        "code": code,
+        "latest_date": None,
+        "big_net_inflow": None,
+        "super_big_net_inflow": None,
+        "big_ratio": None,
+        "super_big_ratio": None,
+        "updated_at": None,
+        "error": None,
+    }
+    try:
+        clean = code.split(".")[-1] if "." in code else code
+        prefix = code.split(".")[0].lower() if "." in code else "sh"
+        df = ak.stock_individual_fund_flow(stock=clean, market=prefix)
+        if df is None or df.empty:
+            result["error"] = "数据为空"
+            return result
+        df["日期"] = pd.to_datetime(df["日期"], errors="coerce")
+        df = df.sort_values("日期", ascending=False)
+
+        if "大单净流入-净额" not in df.columns or "超大单净流入-净额" not in df.columns:
+            result["error"] = "列名变化"
+            return result
+
+        latest = df.iloc[0]
+        result["latest_date"] = str(latest["日期"].date())
+        result["big_net_inflow"] = float(latest.get("大单净流入-净额", 0))
+        result["super_big_net_inflow"] = float(latest.get("超大单净流入-净额", 0))
+        result["big_ratio"] = float(latest.get("大单净流入-净占比", 0))
+        result["super_big_ratio"] = float(latest.get("超大单净流入-净占比", 0))
+        result["updated_at"] = str(latest["日期"].date())
+    except Exception as e:
+        result["error"] = str(e)[:60]
+    return result
+
+
+def analyze_selection(code: str) -> dict:
+    """综合选股分析：股东数量 + 大单 + 股价波动相关性"""
+    holder = analyze_holder(code)
+    fund = analyze_fund_flow(code)
+    summary = {
+        "code": code,
+        "holder": holder,
+        "fund_flow": fund,
+        "score": 0.0,
+        "signals": [],
+    }
+    # 股东减少 -> 筹码集中 -> 利好
+    if holder.get("shareholder_change") is not None:
+        chg = holder["shareholder_change"]
+        if chg < 0:
+            summary["score"] += 0.3
+            summary["signals"].append(f"股东减少 {abs(int(chg))} 户 (筹码集中)")
+        elif chg > 0:
+            summary["score"] -= 0.2
+            summary["signals"].append(f"股东增加 {int(chg)} 户 (筹码分散)")
+
+    # 大单净流入
+    big = fund.get("big_net_inflow") or 0
+    super_big = fund.get("super_big_net_inflow") or 0
+    total_big = big + super_big
+    if total_big > 1_000_000:
+        summary["score"] += 0.4
+        summary["signals"].append(f"大单净流入 {total_big/10000:.0f} 万")
+    elif total_big < -1_000_000:
+        summary["score"] -= 0.4
+        summary["signals"].append(f"大单净流出 {abs(total_big)/10000:.0f} 万")
+
+    if fund.get("big_ratio") is not None and fund["big_ratio"] > 5:
+        summary["score"] += 0.2
+        summary["signals"].append(f"大单占比 {fund['big_ratio']:.1f}%")
+    if fund.get("super_big_ratio") is not None and fund["super_big_ratio"] > 5:
+        summary["score"] += 0.2
+        summary["signals"].append(f"超大单占比 {fund['super_big_ratio']:.1f}%")
+
+    return summary
 
 
 # ──────────────────────────────────────────────────────────────
@@ -522,7 +751,8 @@ def backtest_portfolio(pool: list[str], start: str, end: str,
                        initial_capital: float = 100_000,
                        commission: float = 0.00025,
                        stamp_tax: float = 0.0005,
-                       progress_callback=None) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+                       progress_callback=None,
+                       log_callback=None) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
     print(f"[回测] 组合: {len(pool)} 只, 调仓: {rebalance_freq}, 权重: {method}")
 
     all_data = {}
@@ -530,7 +760,7 @@ def backtest_portfolio(pool: list[str], start: str, end: str,
     for idx, code in enumerate(pool, 1):
         if progress_callback:
             progress_callback(f"获取数据 {idx}/{total}: {code}", int((idx - 1) / total * 40))
-        df = fetch_price(code, start, end)
+        df = fetch_price(code, start, end, log_callback=log_callback)
         if not df.empty and len(df) >= 60:
             all_data[code] = df
             print(f"  {code}: {len(df)} bars")
@@ -787,15 +1017,35 @@ def monitor_news(pool: list[str]) -> dict:
     print("[新闻] 正在获取实时新闻...")
     news_df = fetch_news(max_items=100)
     if news_df.empty:
-        return {"events": [], "alert_level": "normal"}
+        return {"events": [], "alert_level": "normal", "last_updated": None}
+
+    last_updated = None
+    if "time" in news_df.columns and not news_df["time"].isna().all():
+        last_updated = str(news_df["time"].max())
 
     events = []
     alert_level = "normal"
+    tag_counts = {"地缘政治": 0, "军事突发": 0, "产业链": 0, "其他": 0}
+
     for _, row in news_df.iterrows():
         content = str(row.get("content", ""))
-        for kw in GEOPOLITICAL_KEYWORDS:
+        raw_tags = str(row.get("tags", "")).split(",")
+        primary_tag = raw_tags[0] if raw_tags else "其他"
+        # 只统计第一个标签到固定分类，其余合并到"其他"
+        if primary_tag in tag_counts:
+            tag_counts[primary_tag] += 1
+        else:
+            tag_counts["其他"] += 1
+
+        # 高风险事件
+        for kw in GEOPOLITICAL_KEYWORDS + MILITARY_KEYWORDS:
             if kw in content:
-                events.append({"time": str(row.get("time", "")), "keyword": kw, "content": content[:200]})
+                events.append({
+                    "time": str(row.get("time", "")),
+                    "keyword": kw,
+                    "content": content[:200],
+                    "tag": primary_tag
+                })
                 break
 
     if len(events) >= 5:
@@ -803,8 +1053,14 @@ def monitor_news(pool: list[str]) -> dict:
     elif len(events) >= 2:
         alert_level = "medium"
 
-    print(f"[新闻] 获取 {len(news_df)} 条，地缘事件 {len(events)} 条，预警: {alert_level}")
-    return {"events": events[:10], "alert_level": alert_level}
+    print(f"[新闻] 获取 {len(news_df)} 条，标签: {tag_counts}，预警: {alert_level}")
+    return {
+        "events": events[:10],
+        "alert_level": alert_level,
+        "last_updated": last_updated,
+        "tag_counts": tag_counts,
+        "total": len(news_df),
+    }
 
 
 # ──────────────────────────────────────────────────────────────
