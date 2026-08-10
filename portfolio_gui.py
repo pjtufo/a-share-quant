@@ -274,6 +274,17 @@ class ResultPanel(ttk.Frame):
         chart_frame = ttk.Frame(self)
         chart_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
+        # 进度条
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_bar = ttk.Progressbar(chart_frame, variable=self.progress_var,
+                                             maximum=100, mode="determinate")
+        self.progress_bar.pack(fill=tk.X, padx=5, pady=(0, 5))
+
+        # 进度标签
+        self.progress_label = tk.Label(chart_frame, text="就绪", bg=COLORS["bg_primary"],
+                                       fg=COLORS["text_secondary"], font=("Microsoft YaHei", 9))
+        self.progress_label.pack(anchor=tk.W, padx=5, pady=(0, 5))
+
         # 使用 matplotlib 嵌入 tkinter
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         from matplotlib.figure import Figure
@@ -624,14 +635,23 @@ class PortfolioApp:
 
         self._set_running(True)
         self.status_var.set("正在运行回测...")
+        self.result_panel.progress_var.set(0)
+        self.result_panel.progress_label.config(text="准备中...")
 
         def _run():
             try:
+                def _progress(text, pct):
+                    self.winfo_toplevel().after(0, lambda: (
+                        self.result_panel.progress_var.set(pct),
+                        self.result_panel.progress_label.config(text=text)
+                    ))
+
                 equity_df, metrics, trades_df = backtest_portfolio(
                     pool, config["start"], config["end"],
                     rebalance_freq=config["rebalance"],
                     method=config["method"],
                     initial_capital=config["capital"],
+                    progress_callback=_progress,
                 )
 
                 if equity_df.empty:

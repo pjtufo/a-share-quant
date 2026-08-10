@@ -521,11 +521,15 @@ def backtest_portfolio(pool: list[str], start: str, end: str,
                        method: str = "评分加权",
                        initial_capital: float = 100_000,
                        commission: float = 0.00025,
-                       stamp_tax: float = 0.0005) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+                       stamp_tax: float = 0.0005,
+                       progress_callback=None) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
     print(f"[回测] 组合: {len(pool)} 只, 调仓: {rebalance_freq}, 权重: {method}")
 
     all_data = {}
-    for code in pool:
+    total = len(pool)
+    for idx, code in enumerate(pool, 1):
+        if progress_callback:
+            progress_callback(f"获取数据 {idx}/{total}: {code}", int((idx - 1) / total * 40))
         df = fetch_price(code, start, end)
         if not df.empty and len(df) >= 60:
             all_data[code] = df
@@ -537,6 +541,8 @@ def backtest_portfolio(pool: list[str], start: str, end: str,
         return pd.DataFrame(), {}, pd.DataFrame()
 
     # 合并价格矩阵
+    if progress_callback:
+        progress_callback("合并价格矩阵...", 40)
     all_dates = sorted(set().union(*[set(df["date"]) for df in all_data.values()]))
     price_df = pd.DataFrame({"date": all_dates})
     for code, df in all_data.items():
@@ -553,6 +559,8 @@ def backtest_portfolio(pool: list[str], start: str, end: str,
     holdings = {code: 0 for code in all_data.keys()}
     equity_list = []
     trades = []
+    total_bars = len(price_df)
+    rebalance_dates = price_df[price_df["rebalance"] == True]
 
     for idx, row in price_df.iterrows():
         date = row["date"]
@@ -560,7 +568,12 @@ def backtest_portfolio(pool: list[str], start: str, end: str,
         equity_list.append({"date": date, "equity": current_value})
 
         if row["rebalance"]:
-            # 评分
+            if progress_callback:
+                rebalance_idx = list(rebalance_dates.index).index(idx) if idx in rebalance_dates.index else 0
+                total_rebalances = len(rebalance_dates)
+                pct = 40 + int(rebalance_idx / max(total_rebalances, 1) * 50)
+                progress_callback(f"调仓计算 {rebalance_idx+1}/{total_rebalances}: {date.strftime('%Y-%m-%d')}", pct)
+
             scores = {}
             for code in all_data:
                 score_result = score_stock(all_data[code][all_data[code]["date"] <= date], code)
@@ -611,9 +624,16 @@ def backtest_portfolio(pool: list[str], start: str, end: str,
                     trades.append({"date": date, "code": code, "type": "SELL",
                                    "price": sell_price, "shares": sell_shares, "fee": fee})
 
+    if progress_callback:
+        progress_callback("计算绩效指标...", 95)
+
     equity_df = pd.DataFrame(equity_list)
     trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
     metrics = _calc_metrics(equity_df, initial_capital)
+
+    if progress_callback:
+        progress_callback("完成", 100)
+
     return equity_df, metrics, trades_df
 
 
