@@ -405,9 +405,9 @@ class NewsPanel(ttk.Frame):
                 alert = result.get("alert_level", "normal")
 
                 # 更新UI（在主线程）
-                self.winfo_toplevel().after(0, lambda: self._update_news(events, alert))
+                self.root.after(0, lambda: self._update_news(events, alert))
             except Exception as e:
-                self.winfo_toplevel().after(0, lambda: self.alert_label.config(
+                self.root.after(0, lambda: self.alert_label.config(
                     text=f"获取失败: {str(e)[:50]}", fg=COLORS["danger"]))
 
         threading.Thread(target=_fetch, daemon=True).start()
@@ -466,7 +466,7 @@ class ScorePanel(ttk.Frame):
         scrollbar.config(command=self.tree.yview)
 
         # 初始加载
-        self.winfo_toplevel().after(100, self.refresh_scores)
+        self.root.after(100, self.refresh_scores)
 
     def refresh_scores(self):
         # 清空
@@ -499,7 +499,7 @@ class ScorePanel(ttk.Frame):
                 except Exception:
                     pass
 
-            self.winfo_toplevel().after(0, lambda: self._update_table(scores_data))
+            self.root.after(0, lambda: self._update_table(scores_data))
 
         threading.Thread(target=_fetch, daemon=True).start()
 
@@ -642,7 +642,7 @@ class PortfolioApp:
         def _run():
             try:
                 def _progress(text, pct):
-                    self.winfo_toplevel().after(0, lambda: (
+                    self.root.after(0, lambda: (
                         self.result_panel.progress_var.set(pct),
                         self.result_panel.progress_label.config(text=text),
                         self.status_var.set(f"回测中: {text}")
@@ -657,7 +657,7 @@ class PortfolioApp:
                 )
 
                 if equity_df.empty:
-                    self.winfo_toplevel().after(0, lambda: messagebox.showerror("错误", "回测失败：数据不足"))
+                    self.root.after(0, lambda: messagebox.showerror("错误", "回测失败：数据不足"))
                     return
 
                 # 保存结果
@@ -680,11 +680,11 @@ class PortfolioApp:
                 plot_portfolio(equity_df, pool, config["method"], save_path=chart_path)
 
                 # 更新UI
-                self.winfo_toplevel().after(0, lambda: self._on_backtest_complete(equity_df, metrics, pool, config["method"]))
+                self.root.after(0, lambda: self._on_backtest_complete(equity_df, metrics, pool, config["method"]))
             except Exception as e:
-                self.winfo_toplevel().after(0, lambda: messagebox.showerror("回测失败", str(e)))
+                self.root.after(0, lambda: messagebox.showerror("回测失败", str(e)))
             finally:
-                self.winfo_toplevel().after(0, lambda: self._set_running(False))
+                self.root.after(0, lambda: self._set_running(False))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -745,12 +745,12 @@ class PortfolioApp:
                 score_path = os.path.join(self.report_dir, "portfolio_scores.png")
                 plot_score_breakdown(scores, save_path=score_path)
 
-                self.winfo_toplevel().after(0, lambda: messagebox.showinfo("完成", f"报告已生成:\n{report_path}"))
-                self.winfo_toplevel().after(0, lambda: self.status_var.set("报告生成完成"))
+                self.root.after(0, lambda: messagebox.showinfo("完成", f"报告已生成:\n{report_path}"))
+                self.root.after(0, lambda: self.status_var.set("报告生成完成"))
             except Exception as e:
-                self.winfo_toplevel().after(0, lambda: messagebox.showerror("失败", str(e)))
+                self.root.after(0, lambda: messagebox.showerror("失败", str(e)))
             finally:
-                self.winfo_toplevel().after(0, lambda: self._set_running(False))
+                self.root.after(0, lambda: self._set_running(False))
 
         threading.Thread(target=_run, daemon=True).start()
 
