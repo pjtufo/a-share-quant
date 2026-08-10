@@ -644,7 +644,8 @@ class PortfolioApp:
                 def _progress(text, pct):
                     self.winfo_toplevel().after(0, lambda: (
                         self.result_panel.progress_var.set(pct),
-                        self.result_panel.progress_label.config(text=text)
+                        self.result_panel.progress_label.config(text=text),
+                        self.status_var.set(f"回测中: {text}")
                     ))
 
                 equity_df, metrics, trades_df = backtest_portfolio(
