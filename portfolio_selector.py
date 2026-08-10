@@ -814,7 +814,7 @@ def main():
     parser = argparse.ArgumentParser(description="一揽子股票选股组合分析系统")
     parser.add_argument("--mode", default="backtest", choices=["backtest", "report", "news"])
     parser.add_argument("--pool", default=None, help="股票池，逗号分隔")
-    parser.add_argument("--start", default="2020-01-01")
+    parser.add_argument("--start", default=(dt.date.today() - dt.timedelta(days=730)).strftime("%Y-%m-%d"))
     parser.add_argument("--end", default=None)
     parser.add_argument("--rebalance", default="W", choices=["W", "M"])
     parser.add_argument("--method", default="评分加权", choices=["评分加权", "风险平价"])

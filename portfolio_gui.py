@@ -209,7 +209,8 @@ class ConfigPanel(ttk.Frame):
         date_frame = ttk.Frame(self)
         date_frame.pack(fill=tk.X, padx=10, pady=5)
         ttk.Label(date_frame, text="开始日期:").pack(side=tk.LEFT, padx=5)
-        self.vars["start"] = tk.StringVar(value="2020-01-01")
+        two_years_ago = (dt.date.today() - dt.timedelta(days=730)).strftime("%Y-%m-%d")
+        self.vars["start"] = tk.StringVar(value=two_years_ago)
         ttk.Entry(date_frame, textvariable=self.vars["start"], width=15).pack(side=tk.LEFT, padx=5)
 
         ttk.Label(date_frame, text="结束日期:").pack(side=tk.LEFT, padx=5)
