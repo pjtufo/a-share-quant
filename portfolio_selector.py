@@ -1897,55 +1897,73 @@ def fetch_stock_basic_info(code: str) -> dict:
     result = {"name": "", "industry": "", "main_business": "", "capital": "",
               "float_shares": "", "total_mv": "", "pe": "", "pb": "",
               "pledge_ratio": "", "margin_balance": "", "updated_at": ""}
+    clean = _clean_code(code)
+    # 主源：腾讯 qt（快、稳、免密钥）
     try:
-        clean = _clean_code(code)
-        # 使用更短的超时和重试
-        for attempt in range(3):
-            try:
-                import requests
-                url = f"https://emweb.securities.eastmoney.com/PC_HSF10/NewCompanySurvey/Index?type=web&code=SH{clean if not clean.startswith(('6','9')) else clean}"
-                # 备用：直接调用akshare，但设置短超时
-                import socket
-                old_timeout = socket.getdefaulttimeout()
-                socket.setdefaulttimeout(10)
-                info = ak.stock_individual_info_em(symbol=clean)
-                socket.setdefaulttimeout(old_timeout)
-                if info is not None and not info.empty:
-                    for _, row in info.iterrows():
-                        item = str(row.get("item", "")).strip()
-                        value = row.get("value", "")
-                        if item == "股票简称":
-                            result["name"] = str(value)
-                        elif item == "行业":
-                            result["industry"] = str(value)
-                        elif item == "主营业务":
-                            result["main_business"] = str(value)[:100]
-                        elif item == "总股本":
-                            result["capital"] = f"{value/1e8:.2f}亿股" if isinstance(value, (int, float)) else str(value)
-                        elif item == "流通股":
-                            result["float_shares"] = f"{value/1e8:.2f}亿股" if isinstance(value, (int, float)) else str(value)
-                        elif item == "总市值":
-                            result["total_mv"] = f"{value/1e8:.2f}亿" if isinstance(value, (int, float)) else str(value)
-                        elif item == "市盈率-动态":
-                            result["pe"] = f"{value:.2f}" if isinstance(value, (int, float)) else str(value)
-                        elif item == "市净率":
-                            result["pb"] = f"{value:.2f}" if isinstance(value, (int, float)) else str(value)
-                        elif item == "上市时间":
-                            result["updated_at"] = str(value)
-                break
-            except Exception:
-                if attempt < 2:
-                    time.sleep(1)
-                else:
+        import requests, re
+        prefix = "sh" if clean.startswith(("6", "9")) else "sz"
+        r = requests.get(f"https://qt.gtimg.cn/q={prefix}{clean}", timeout=5)
+        m = re.search(r'v_s[hz]\d+="(.+?)"', r.text)
+        if m:
+            parts = m.group(1).split("~")
+            if len(parts) > 1:
+                result["name"] = parts[1].strip()
+            if len(parts) > 45 and parts[45].strip():
+                try:
+                    result["total_mv"] = f"{float(parts[45]):.2f}亿"
+                except Exception:
+                    pass
+            if len(parts) > 46 and parts[46].strip():
+                try:
+                    result["float_mv"] = f"{float(parts[46]):.2f}亿"
+                except Exception:
+                    pass
+            if len(parts) > 39 and parts[39].strip():
+                try:
+                    pe = float(parts[39])
+                    result["pe"] = f"{pe:.2f}" if pe > 0 else "亏损"
+                except Exception:
+                    pass
+            if len(parts) > 40 and parts[40].strip():
+                try:
+                    result["pb"] = f"{float(parts[40]):.2f}"
+                except Exception:
+                    pass
+            if len(parts) > 47 and parts[47].strip():
+                try:
+                    result["capital"] = f"{float(parts[47])/10000:.2f}亿股"
+                except Exception:
+                    pass
+            if len(parts) > 48 and parts[48].strip():
+                try:
+                    result["float_shares"] = f"{float(parts[48])/10000:.2f}亿股"
+                except Exception:
                     pass
     except Exception:
         pass
+    # 回退：akshare 补充行业/主营业务等文本信息
+    try:
+        info = ak.stock_individual_info_em(symbol=clean)
+        if info is not None and not info.empty:
+            for _, row in info.iterrows():
+                item = str(row.get("item", "")).strip()
+                value = row.get("value", "")
+                if item == "行业":
+                    result["industry"] = str(value)
+                elif item == "主营业务":
+                    result["main_business"] = str(value)[:100]
+                elif item == "上市时间":
+                    result["updated_at"] = str(value)
+    except Exception:
+        pass
+    # 股权质押
     try:
         pledge = ak.stock_gpzy_pledge_ratio_em(symbol=clean)
         if not pledge.empty:
             result["pledge_ratio"] = f"{pledge.iloc[0].get('股权质押比例', 0):.2f}%"
     except Exception:
         pass
+    # 融资余额
     try:
         margin = ak.stock_margin_detail_szse(symbol=clean)
         if not margin.empty:
@@ -1962,29 +1980,41 @@ def fetch_sector_info(code: str) -> dict:
     try:
         clean = _clean_code(code)
         name = fetch_name(code)
-        # 行业板块
-        for attempt in range(3):
+        result["industry"] = name
+        # 超时保护：线程执行，最多等 3 秒
+        import threading
+        ok = {}
+
+        def _try_industry():
             try:
                 cons = ak.stock_board_industry_cons_em(symbol=name)
-                if not cons.empty:
-                    result["industry"] = name
-                    rank_row = cons[cons["代码"] == clean]
-                    if not rank_row.empty:
-                        result["industry_rank"] = f"{rank_row.index[0]+1}/{len(cons)}"
-                    result["related"] = cons.head(10)[["代码", "名称"]].values.tolist()
-                break
+                if cons is not None and not cons.empty:
+                    ok["industry"] = cons
             except Exception:
                 pass
-        # 概念板块
-        for attempt in range(3):
+
+        def _try_concept():
             try:
                 ccons = ak.stock_board_concept_cons_em(symbol=name)
-                if not ccons.empty:
-                    result["concept"] = ccons["概念"].dropna().unique().tolist()[:5]
-                    result["related"] = ccons.head(10)[["代码", "名称"]].values.tolist()
-                break
+                if ccons is not None and not ccons.empty:
+                    ok["concept"] = ccons
             except Exception:
                 pass
+
+        t1 = threading.Thread(target=_try_industry, daemon=True)
+        t2 = threading.Thread(target=_try_concept, daemon=True)
+        t1.start(); t2.start()
+        t1.join(timeout=3); t2.join(timeout=3)
+        cons = ok.get("industry")
+        if cons is not None and not cons.empty:
+            rank_row = cons[cons["代码"] == clean]
+            if not rank_row.empty:
+                result["industry_rank"] = f"{rank_row.index[0]+1}/{len(cons)}"
+            result["related"] = cons.head(10)[["代码", "名称"]].values.tolist()
+        ccons = ok.get("concept")
+        if ccons is not None and not ccons.empty:
+            result["concept"] = ccons["概念"].dropna().unique().tolist()[:5]
+            result["related"] = ccons.head(10)[["代码", "名称"]].values.tolist()
     except Exception:
         pass
     return result
