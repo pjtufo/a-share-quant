@@ -604,7 +604,7 @@ def classify_channel(df: pd.DataFrame) -> dict:
             pattern = "下降通道"
             reason = "股价呈线性下跌趋势，建议规避或等待止跌信号"
         result["pattern"] = pattern
-        result["confidence"] = f"{r2*100:.0f}%"
+        result["confidence"] = float(r2)
         result["reason"] = reason
     except Exception:
         pass

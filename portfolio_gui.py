@@ -710,6 +710,18 @@ class DiagnosisPanel(ttk.Frame):
                   font=("Microsoft YaHei", 12, "bold")).pack(side=tk.LEFT)
         ttk.Button(header, text="诊断选中", command=self.diagnose_selected).pack(side=tk.RIGHT, padx=5)
 
+        # 搜索框
+        search_frame = ttk.Frame(self)
+        search_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+        ttk.Label(search_frame, text="🔍 查询诊断:").pack(side=tk.LEFT)
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=30)
+        self.search_entry.pack(side=tk.LEFT, padx=5)
+        self.search_entry.bind("<Return>", lambda e: self.diagnose_from_search())
+        ttk.Button(search_frame, text="诊断", command=self.diagnose_from_search).pack(side=tk.LEFT, padx=5)
+        ttk.Label(search_frame, text="支持: 代码(sh.600519) / 缩写(600519) / 中文(贵州茅台)",
+                  foreground=COLORS["text_secondary"], font=("Microsoft YaHei", 8)).pack(side=tk.LEFT, padx=10)
+
         main = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         main.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
@@ -751,6 +763,56 @@ class DiagnosisPanel(ttk.Frame):
             messagebox.showinfo("提示", "请先在左侧选择一只股票")
             return
         code = self.pool_tree.item(sel[0])["values"][0]
+        self._run_diagnosis(code)
+
+    def diagnose_from_search(self):
+        text = self.search_var.get().strip()
+        if not text:
+            messagebox.showinfo("提示", "请输入股票代码或名称")
+            return
+        code = self._resolve_code(text)
+        if not code:
+            messagebox.showwarning("未找到", f"未找到匹配股票: {text}")
+            return
+        self.search_var.set(code)
+        self._run_diagnosis(code)
+
+    def _resolve_code(self, text: str) -> str | None:
+        """将输入解析为标准代码: 直接代码 / 6位缩写 / 中文名称"""
+        text = text.strip()
+        # 已是标准代码
+        if re.match(r'^(sh|sz|hk)\.\d{6}$', text):
+            return text
+        # 6位数字缩写
+        if re.match(r'^\d{6}$', text):
+            prefix = "sh" if text.startswith(('600', '601', '603', '605', '688')) else "sz"
+            return f"{prefix}.{text}"
+        # 中文/字母名称模糊匹配
+        name_map = {}
+        for code in self.pool_list:
+            try:
+                name = fetch_name(code)
+                name_map[name] = code
+            except Exception:
+                pass
+        # 去除全角空格/半角空格用于匹配
+        norm = lambda s: s.replace(' ', '').replace('　', '')
+        norm_map = {norm(k): k for k in name_map}
+        norm_text = norm(text)
+        # 精确匹配（去除空格）
+        if norm_text in norm_map:
+            return name_map[norm_map[norm_text]]
+        # 模糊匹配（去除空格）
+        matches = [n for n in norm_map if norm_text in n]
+        if len(matches) == 1:
+            return name_map[norm_map[matches[0]]]
+        elif len(matches) > 1:
+            names = "\n".join([f"{norm_map[n]} ({name_map[norm_map[n]]})" for n in matches])
+            messagebox.showinfo("多只匹配", f"找到 {len(matches)} 只:\n{names}")
+            return None
+        return None
+
+    def _run_diagnosis(self, code: str):
         self.result_text.delete("1.0", tk.END)
         self.info_label.config(text=f"正在诊断 {code} ...", fg=COLORS["warning"])
         self.update()
@@ -788,8 +850,11 @@ class DiagnosisPanel(ttk.Frame):
         w("title", f"【{code} {name}】 综合诊断")
         w("neutral", f"综合评分: {result['score']:.2f}")
         scenario = result.get("scenario", {})
+        conf = scenario.get("confidence", 0)
+        if isinstance(conf, (int, float)) and conf > 1:
+            conf = conf / 100
         w("neutral", f"综合场景: {scenario.get('scenario','未知')} (建议: {scenario.get('action','观望')})")
-        w("neutral", f"置信度: {scenario.get('confidence', 0):.0%}")
+        w("neutral", f"置信度: {conf:.0%}")
 
         # 1. 股东分析
         section("1. 股东分析")
