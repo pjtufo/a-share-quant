@@ -27,6 +27,8 @@ from portfolio_selector import (
     analyze_selection, analyze_technical,
     analyze_fund_flow_trend, analyze_holder_trend, analyze_north_flow_trend,
     analyze_ma_alignment, analyze_pattern_double, analyze_support_resistance,
+    fetch_stock_basic_info, fetch_sector_info, plot_diagnosis_charts,
+    _clean_code,
 )
 
 # ──────────────────────────────────────────────────────────────
@@ -757,6 +759,30 @@ class DiagnosisPanel(ttk.Frame):
         self.result_text.tag_config("negative", foreground=COLORS["danger"])
         self.result_text.tag_config("neutral", foreground=COLORS["text_secondary"])
 
+        # 图表区域
+        chart_frame = ttk.LabelFrame(right, text="📈 诊断图表")
+        chart_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.chart_canvas_frame = ttk.Frame(chart_frame)
+        self.chart_canvas_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.chart_label = tk.Label(self.chart_canvas_frame,
+                                   text="诊断完成后显示图表",
+                                   bg=COLORS["bg_primary"], fg=COLORS["text_secondary"],
+                                   font=("Microsoft YaHei", 9))
+        self.chart_label.pack(anchor=tk.CENTER, expand=True)
+
+        # K线图叠加控制
+        kline_ctrl = ttk.Frame(right)
+        kline_ctrl.pack(fill=tk.X, padx=10, pady=(0, 10))
+        ttk.Label(kline_ctrl, text="叠加K线:").pack(side=tk.LEFT)
+        self.kline_overlay_var = tk.StringVar(value="")
+        ttk.Entry(kline_ctrl, textvariable=self.kline_overlay_var, width=40).pack(side=tk.LEFT, padx=5)
+        ttk.Button(kline_ctrl, text="刷新图表", command=self._refresh_chart).pack(side=tk.LEFT, padx=5)
+        self.kline_overlay_var.trace_add("write", lambda *_: self._refresh_chart())
+
+        # 当前诊断代码
+        self._current_code = None
+        self._current_chart_paths = {}
+
     def diagnose_selected(self):
         sel = self.pool_tree.selection()
         if not sel:
@@ -820,18 +846,44 @@ class DiagnosisPanel(ttk.Frame):
         def _run():
             try:
                 result = analyze_selection(code)
-                self.root.after(0, lambda: self._show_diagnosis(code, result))
+                basic = fetch_stock_basic_info(code)
+                sector = fetch_sector_info(code)
+                # 生成图表
+                end = dt.datetime.today().strftime("%Y-%m-%d")
+                start = (dt.datetime.today() - dt.timedelta(days=365)).strftime("%Y-%m-%d")
+                df = fetch_price(code, start, end)
+                holders_df = pd.DataFrame()
+                fund_df = pd.DataFrame()
+                cyq_df = pd.DataFrame()
+                try:
+                    holders_df = ak.stock_circulate_stock_holder(symbol=_clean_code(code))
+                except Exception:
+                    pass
+                try:
+                    fund_df = ak.stock_individual_fund_flow(symbol=_clean_code(code))
+                except Exception:
+                    pass
+                try:
+                    cyq_df = ak.stock_cyq_em(symbol=_clean_code(code), adjust="qfq")
+                except Exception:
+                    pass
+                chart_paths = plot_diagnosis_charts(code, df, holders_df, fund_df, cyq_df,
+                                                    os.path.join(self.report_dir, f"diag_{_clean_code(code)}"))
+                self.root.after(0, lambda: self._show_diagnosis(code, result, basic, sector, chart_paths))
             except Exception as e:
                 self.root.after(0, lambda: self.info_label.config(
                     text=f"诊断失败: {str(e)[:60]}", fg=COLORS["danger"]))
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _show_diagnosis(self, code: str, result: dict):
+    def _show_diagnosis(self, code: str, result: dict, basic: dict = None, sector: dict = None, chart_paths: dict = None):
         self.result_text.delete("1.0", tk.END)
         self.info_label.config(text=f"诊断完成: {code} | 评分 {result['score']:.2f}",
                                fg=COLORS["success"])
         txt = self.result_text
+        basic = basic or {}
+        sector = sector or {}
+        chart_paths = chart_paths or {}
 
         def w(tag, text):
             txt.insert(tk.END, text + "\n", tag)
@@ -841,12 +893,12 @@ class DiagnosisPanel(ttk.Frame):
             w("neutral", "─" * 40)
 
         def kv(key, val, fmt=str):
-            if val is None:
+            if val is None or val == "":
                 return
             w("neutral", f"  {key}: {fmt(val)}")
 
         # 标题
-        name = fetch_name(code)
+        name = basic.get("name") or fetch_name(code)
         w("title", f"【{code} {name}】 综合诊断")
         w("neutral", f"综合评分: {result['score']:.2f}")
         scenario = result.get("scenario", {})
@@ -855,6 +907,37 @@ class DiagnosisPanel(ttk.Frame):
             conf = conf / 100
         w("neutral", f"综合场景: {scenario.get('scenario','未知')} (建议: {scenario.get('action','观望')})")
         w("neutral", f"置信度: {conf:.0%}")
+
+        # 0. 基本信息
+        section("0. 基本信息")
+        kv("股票简称", basic.get("name"))
+        kv("所属行业", basic.get("industry"))
+        kv("主营业务", basic.get("main_business"))
+        kv("总股本", basic.get("capital"))
+        kv("流通股", basic.get("float_shares"))
+        kv("总市值", basic.get("total_mv"))
+        kv("市盈率(动态)", basic.get("pe"))
+        kv("市净率", basic.get("pb"))
+        kv("股权质押", basic.get("pledge_ratio"))
+        kv("融资余额", basic.get("margin_balance"))
+        kv("上市时间", basic.get("updated_at"))
+        for key in ["pe", "pb", "pledge_ratio", "margin_balance"]:
+            val = basic.get(key)
+            if val and ("-" in str(val) or "亏" in str(val) or "无" in str(val)):
+                w("neutral", f"  ⚠ {key}: {val}")
+
+        # 0.1 板块分类与排名
+        section("0.1 板块分类与排名")
+        kv("所属行业", sector.get("industry"))
+        kv("行业排名", sector.get("industry_rank"))
+        concepts = sector.get("concept", [])
+        if concepts:
+            w("neutral", f"  概念板块: {', '.join(concepts)}")
+        related = sector.get("related", [])
+        if related:
+            w("neutral", "  同板块相关:")
+            for r in related[:10]:
+                w("neutral", f"    {r[0]} {r[1]}")
 
         # 1. 股东分析
         section("1. 股东分析")
@@ -991,6 +1074,132 @@ class DiagnosisPanel(ttk.Frame):
             w("negative", f"\n★ 建议操作: {action}")
         else:
             w("neutral", f"\n★ 建议操作: {action}")
+
+        # 保存当前状态并显示图表
+        self._current_code = code
+        self._current_chart_paths = chart_paths or {}
+        if self._current_chart_paths.get("diagnosis"):
+            self.root.after(100, self._show_chart)
+        else:
+            self.chart_label.config(text="暂无图表数据")
+
+    def _show_chart(self):
+        # 清空图表区域
+        for widget in self.chart_canvas_frame.winfo_children():
+            widget.destroy()
+        path = self._current_chart_paths.get("diagnosis")
+        if not path or not os.path.exists(path):
+            self.chart_label = tk.Label(self.chart_canvas_frame, text="图表未生成",
+                                       bg=COLORS["bg_primary"], fg=COLORS["text_secondary"],
+                                       font=("Microsoft YaHei", 9))
+            self.chart_label.pack(anchor=tk.CENTER, expand=True)
+            return
+        # 显示图片
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open(path)
+            w = self.chart_canvas_frame.winfo_width() or 800
+            h = self.chart_canvas_frame.winfo_height() or 600
+            ratio = min(w / img.width, h / img.height, 1.0)
+            img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            lbl = tk.Label(self.chart_canvas_frame, image=photo, bg=COLORS["bg_primary"])
+            lbl.image = photo
+            lbl.pack(anchor=tk.CENTER, expand=True)
+        except Exception:
+            self.chart_label = tk.Label(self.chart_canvas_frame, text=f"图表: {path}",
+                                       bg=COLORS["bg_primary"], fg=COLORS["text_secondary"],
+                                       font=("Microsoft YaHei", 9))
+            self.chart_label.pack(anchor=tk.CENTER, expand=True)
+
+    def _refresh_chart(self):
+        if not self._current_code:
+            return
+        overlay_text = self.kline_overlay_var.get().strip()
+        if not overlay_text:
+            # 重新生成默认图表
+            try:
+                end = dt.datetime.today().strftime("%Y-%m-%d")
+                start = (dt.datetime.today() - dt.timedelta(days=365)).strftime("%Y-%m-%d")
+                df = fetch_price(self._current_code, start, end)
+                holders_df = pd.DataFrame()
+                fund_df = pd.DataFrame()
+                cyq_df = pd.DataFrame()
+                try:
+                    holders_df = ak.stock_circulate_stock_holder(symbol=_clean_code(self._current_code))
+                except Exception:
+                    pass
+                try:
+                    fund_df = ak.stock_individual_fund_flow(symbol=_clean_code(self._current_code))
+                except Exception:
+                    pass
+                try:
+                    cyq_df = ak.stock_cyq_em(symbol=_clean_code(self._current_code), adjust="qfq")
+                except Exception:
+                    pass
+                paths = plot_diagnosis_charts(self._current_code, df, holders_df, fund_df, cyq_df,
+                                              os.path.join(self.report_dir, f"diag_{_clean_code(self._current_code)}"))
+                self._current_chart_paths = paths
+                self._show_chart()
+            except Exception:
+                pass
+            return
+        # 解析叠加代码
+        codes = [self._current_code]
+        for part in re.split(r"[,，\s]+", overlay_text):
+            part = part.strip()
+            if not part:
+                continue
+            if re.match(r'^(sh|sz|hk)\.\d{6}$', part):
+                codes.append(part)
+            elif re.match(r'^\d{6}$', part):
+                prefix = "sh" if part.startswith(('600', '601', '603', '605', '688')) else "sz"
+                codes.append(f"{prefix}.{part}")
+        # 生成叠加K线图
+        try:
+            end = dt.datetime.today().strftime("%Y-%m-%d")
+            start = (dt.datetime.today() - dt.timedelta(days=180)).strftime("%Y-%m-%d")
+            fig, axes = plt.subplots(1, 1, figsize=(10, 5), dpi=100)
+            colors = ["#2196F3", "#FF9800", "#4CAF50", "#F44336", "#9C27B0"]
+            for idx, c in enumerate(codes[:5]):
+                try:
+                    d = fetch_price(c, start, end)
+                    if not d.empty and len(d) >= 20:
+                        d = d.sort_values("date")
+                        close = d["close"]
+                        close_norm = close / close.iloc[0] * 100
+                        axes.plot(d["date"], close_norm, label=c, color=colors[idx % len(colors)], linewidth=1.5)
+                except Exception:
+                    pass
+            axes.set_title("叠加K线对比 (归一化)", fontsize=12)
+            axes.legend()
+            axes.grid(True, alpha=0.3)
+            plt.tight_layout()
+            save_path = os.path.join(self.report_dir, f"overlay_{_clean_code(self._current_code)}.png")
+            plt.savefig(save_path, dpi=100, bbox_inches="tight")
+            plt.close()
+            self._current_chart_paths["overlay"] = save_path
+            # 显示叠加图
+            for widget in self.chart_canvas_frame.winfo_children():
+                widget.destroy()
+            try:
+                from PIL import Image, ImageTk
+                img = Image.open(save_path)
+                w = self.chart_canvas_frame.winfo_width() or 800
+                h = self.chart_canvas_frame.winfo_height() or 600
+                ratio = min(w / img.width, h / img.height, 1.0)
+                img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                lbl = tk.Label(self.chart_canvas_frame, image=photo, bg=COLORS["bg_primary"])
+                lbl.image = photo
+                lbl.pack(anchor=tk.CENTER, expand=True)
+            except Exception:
+                self.chart_label = tk.Label(self.chart_canvas_frame, text=f"图表: {save_path}",
+                                           bg=COLORS["bg_primary"], fg=COLORS["text_secondary"],
+                                           font=("Microsoft YaHei", 9))
+                self.chart_label.pack(anchor=tk.CENTER, expand=True)
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────────────────────

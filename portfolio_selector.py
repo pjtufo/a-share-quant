@@ -1889,5 +1889,159 @@ def main():
         print(f"[导出] 净值曲线: {equity_path}")
 
 
+# ──────────────────────────────────────────────────────────────
+# 个股诊断扩展数据函数
+# ──────────────────────────────────────────────────────────────
+def fetch_stock_basic_info(code: str) -> dict:
+    """获取股票基本信息：主营业务、股本、市值、PE、PB等"""
+    result = {"name": "", "industry": "", "main_business": "", "capital": "",
+              "float_shares": "", "total_mv": "", "pe": "", "pb": "",
+              "pledge_ratio": "", "margin_balance": "", "updated_at": ""}
+    try:
+        clean = _clean_code(code)
+        # 使用更短的超时和重试
+        for attempt in range(3):
+            try:
+                import requests
+                url = f"https://emweb.securities.eastmoney.com/PC_HSF10/NewCompanySurvey/Index?type=web&code=SH{clean if not clean.startswith(('6','9')) else clean}"
+                # 备用：直接调用akshare，但设置短超时
+                import socket
+                old_timeout = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(10)
+                info = ak.stock_individual_info_em(symbol=clean)
+                socket.setdefaulttimeout(old_timeout)
+                if info is not None and not info.empty:
+                    for _, row in info.iterrows():
+                        item = str(row.get("item", "")).strip()
+                        value = row.get("value", "")
+                        if item == "股票简称":
+                            result["name"] = str(value)
+                        elif item == "行业":
+                            result["industry"] = str(value)
+                        elif item == "主营业务":
+                            result["main_business"] = str(value)[:100]
+                        elif item == "总股本":
+                            result["capital"] = f"{value/1e8:.2f}亿股" if isinstance(value, (int, float)) else str(value)
+                        elif item == "流通股":
+                            result["float_shares"] = f"{value/1e8:.2f}亿股" if isinstance(value, (int, float)) else str(value)
+                        elif item == "总市值":
+                            result["total_mv"] = f"{value/1e8:.2f}亿" if isinstance(value, (int, float)) else str(value)
+                        elif item == "市盈率-动态":
+                            result["pe"] = f"{value:.2f}" if isinstance(value, (int, float)) else str(value)
+                        elif item == "市净率":
+                            result["pb"] = f"{value:.2f}" if isinstance(value, (int, float)) else str(value)
+                        elif item == "上市时间":
+                            result["updated_at"] = str(value)
+                break
+            except Exception:
+                if attempt < 2:
+                    time.sleep(1)
+                else:
+                    pass
+    except Exception:
+        pass
+    try:
+        pledge = ak.stock_gpzy_pledge_ratio_em(symbol=clean)
+        if not pledge.empty:
+            result["pledge_ratio"] = f"{pledge.iloc[0].get('股权质押比例', 0):.2f}%"
+    except Exception:
+        pass
+    try:
+        margin = ak.stock_margin_detail_szse(symbol=clean)
+        if not margin.empty:
+            result["margin_balance"] = f"{margin.iloc[0].get('融资余额', 0)/1e8:.2f}亿"
+    except Exception:
+        pass
+    return result
+
+
+def fetch_sector_info(code: str) -> dict:
+    """获取板块分类、排名、上下游及相关股票"""
+    result = {"industry": "", "industry_rank": "", "concept": [],
+              "upstream": [], "downstream": [], "related": []}
+    try:
+        clean = _clean_code(code)
+        name = fetch_name(code)
+        # 行业板块
+        for attempt in range(3):
+            try:
+                cons = ak.stock_board_industry_cons_em(symbol=name)
+                if not cons.empty:
+                    result["industry"] = name
+                    rank_row = cons[cons["代码"] == clean]
+                    if not rank_row.empty:
+                        result["industry_rank"] = f"{rank_row.index[0]+1}/{len(cons)}"
+                    result["related"] = cons.head(10)[["代码", "名称"]].values.tolist()
+                break
+            except Exception:
+                pass
+        # 概念板块
+        for attempt in range(3):
+            try:
+                ccons = ak.stock_board_concept_cons_em(symbol=name)
+                if not ccons.empty:
+                    result["concept"] = ccons["概念"].dropna().unique().tolist()[:5]
+                    result["related"] = ccons.head(10)[["代码", "名称"]].values.tolist()
+                break
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return result
+
+
+def plot_diagnosis_charts(code: str, df: pd.DataFrame, holders_df: pd.DataFrame,
+                          fund_df: pd.DataFrame, cyq_df: pd.DataFrame,
+                          save_prefix: str) -> dict:
+    """生成诊断图表：K线图、股东数量、大单次数、筹码集中度"""
+    paths = {}
+    try:
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        fig.suptitle(f"{fetch_name(code)} 技术形态与资金分析", fontsize=14)
+
+        # 1. K线图
+        ax1 = axes[0, 0]
+        ax1.plot(df["date"], df["close"], label="Close", color=COLORS_PRICE[0])
+        ax1.fill_between(df["date"], df["low"], df["high"], alpha=0.3, color=COLORS_PRICE[1])
+        ax1.set_title("K线图")
+        ax1.legend()
+
+        # 2. 股东数量
+        ax2 = axes[0, 1]
+        if holders_df is not None and not holders_df.empty:
+            ax2.plot(holders_df.iloc[:, 0], holders_df.iloc[:, 1], color=COLORS_PRICE[2])
+            ax2.set_title("股东数量")
+            ax2.tick_params(axis="x", rotation=30)
+
+        # 3. 大单净流入
+        ax3 = axes[1, 0]
+        if fund_df is not None and not fund_df.empty:
+            ax3.bar(fund_df.iloc[:, 0], fund_df.iloc[:, 1], color=COLORS_PRICE[3])
+            ax3.set_title("大单净流入")
+            ax3.tick_params(axis="x", rotation=30)
+
+        # 4. 筹码集中度
+        ax4 = axes[1, 1]
+        if cyq_df is not None and not cyq_df.empty:
+            ax4.plot(cyq_df["日期"], cyq_df["90集中度"], label="90%集中度", color=COLORS_PRICE[4])
+            ax4.plot(cyq_df["日期"], cyq_df["70集中度"], label="70%集中度", color=COLORS_PRICE[5])
+            ax4.set_title("筹码集中度")
+            ax4.legend()
+            ax4.tick_params(axis="x", rotation=30)
+
+        plt.tight_layout()
+        chart_path = f"{save_prefix}_diagnosis.png"
+        plt.savefig(chart_path, dpi=100, bbox_inches="tight")
+        plt.close()
+        paths["diagnosis"] = chart_path
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+    return paths
+
+
+COLORS_PRICE = ["#2196F3", "#FF9800", "#4CAF50", "#F44336", "#9C27B0", "#FFEB3B"]
+
+
 if __name__ == "__main__":
     main()
