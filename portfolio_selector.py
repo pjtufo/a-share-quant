@@ -570,6 +570,105 @@ def analyze_margin(code: str) -> dict:
     return result
 
 
+def classify_channel(df: pd.DataFrame) -> dict:
+    """基于线性回归斜率 + R² + 波动率判断股票处于上升/下降/横盘通道"""
+    result = {"pattern": "数据不足", "slope": None, "r2": None,
+              "volatility": None, "confidence": None, "reason": ""}
+    try:
+        if df is None or len(df) < 30:
+            return result
+        prices = df["close"].tail(60).dropna()
+        if len(prices) < 20:
+            return result
+        x = np.arange(len(prices))
+        slope, intercept = np.polyfit(x, prices.values, 1)
+        y_fit = slope * x + intercept
+        ss_res = np.sum((prices.values - y_fit) ** 2)
+        ss_tot = np.sum((prices.values - np.mean(prices.values)) ** 2)
+        r2 = 1 - ss_res / ss_tot if ss_tot != 0 else 0
+        ret = prices.pct_change().dropna()
+        volatility = ret.std() * np.sqrt(252)
+        result["slope"] = float(slope)
+        result["r2"] = float(r2)
+        result["volatility"] = float(volatility)
+        if r2 < 0.1:
+            pattern = "横盘震荡"
+            if volatility < 0.15:
+                reason = "长期波动不大：成交量低、消息面清淡、无重大利好/利空"
+            else:
+                reason = "横盘高波动：区间震荡，无明确趋势"
+        elif slope > 0 and r2 >= 0.1:
+            pattern = "上升通道"
+            reason = "股价呈线性上涨趋势，可考虑回踩支撑位介入"
+        else:
+            pattern = "下降通道"
+            reason = "股价呈线性下跌趋势，建议规避或等待止跌信号"
+        result["pattern"] = pattern
+        result["confidence"] = f"{r2*100:.0f}%"
+        result["reason"] = reason
+    except Exception:
+        pass
+    return result
+
+
+def analyze_breakout(df: pd.DataFrame, window: int = 20) -> dict:
+    """判断是否刚突破新高或跌破新低"""
+    result = {"breakout": "无", "high_20": None, "low_20": None,
+              "current": None, "strength": 0}
+    try:
+        if df is None or len(df) < window:
+            return result
+        close = df["close"]
+        current = float(close.iloc[-1])
+        high_20 = float(close.tail(window).max())
+        low_20 = float(close.tail(window).min())
+        result["high_20"] = high_20
+        result["low_20"] = low_20
+        result["current"] = current
+        if current >= high_20:
+            result["breakout"] = "突破新高"
+            result["strength"] = (current - low_20) / (high_20 - low_20) * 100 if high_20 != low_20 else 100
+        elif current <= low_20:
+            result["breakout"] = "跌破新低"
+            result["strength"] = (current - low_20) / (high_20 - low_20) * 100 if high_20 != low_20 else 0
+    except Exception:
+        pass
+    return result
+
+
+def analyze_volatility_reason(df: pd.DataFrame) -> dict:
+    """长期波动不大的原因拆解"""
+    result = {"is_low_vol": False, "reasons": [], "avg_volume_ratio": None}
+    try:
+        if df is None or len(df) < 60:
+            return result
+        close = df["close"].tail(120).dropna()
+        if len(close) < 60:
+            return result
+        vol = close.pct_change().dropna().std() * np.sqrt(252)
+        if vol < 0.18:
+            result["is_low_vol"] = True
+        avg_vol = float(df["volume"].tail(60).mean())
+        if "volume" in df.columns:
+            # 简化：与近期均量对比
+            recent_vol = float(df["volume"].tail(5).mean())
+            result["avg_volume_ratio"] = round(recent_vol / avg_vol, 2) if avg_vol > 0 else None
+            if result["avg_volume_ratio"] is not None and result["avg_volume_ratio"] < 0.8:
+                result["reasons"].append("成交量萎缩")
+        # 涨跌幅分布
+        daily_range = (df["high"] - df["low"]) / df["close"]
+        avg_range = float(daily_range.tail(60).mean())
+        if avg_range < 0.02:
+            result["reasons"].append("日内振幅窄")
+        # 价格区间
+        price_range = (close.max() - close.min()) / close.min() * 100
+        if price_range < 15:
+            result["reasons"].append(f"120日价格区间仅{price_range:.1f}%")
+    except Exception:
+        pass
+    return result
+
+
 def analyze_fund_flow(code: str) -> dict:
     """大单/超大单资金流向分析（东方财富接口，可能不稳定）"""
     result = {
@@ -609,7 +708,7 @@ def analyze_fund_flow(code: str) -> dict:
 
 
 def analyze_selection(code: str) -> dict:
-    """综合选股分析：股东数量 + 大单 + 龙虎榜 + 股权质押 + 限售解禁 + 北向资金 + 回购 + 融资融券"""
+    """综合选股分析：股东数量 + 大单 + 龙虎榜 + 股权质押 + 限售解禁 + 北向资金 + 回购 + 融资融券 + 技术形态"""
     holder = analyze_holder(code)
     fund = analyze_fund_flow(code)
     lhb = analyze_lhb(code)
@@ -618,6 +717,8 @@ def analyze_selection(code: str) -> dict:
     north = analyze_north_flow(code)
     # margin 接口不稳定，不阻塞主流程
     margin = analyze_margin(code)
+    # 技术形态
+    tech = analyze_technical(code)
 
     summary = {
         "code": code,
@@ -628,6 +729,7 @@ def analyze_selection(code: str) -> dict:
         "release": release,
         "north_flow": north,
         "margin": margin,
+        "tech": tech,
         "score": 0.0,
         "signals": [],
     }
@@ -698,11 +800,61 @@ def analyze_selection(code: str) -> dict:
             summary["score"] -= 0.15
             summary["signals"].append(f"北向减持 {abs(chg)/10000:.0f} 万股")
 
-    # 7. 回购：有回购 -> 利好
-    # 这里简化：若 `analyze_fund_flow` 返回 error 为 None 且有大单，可考虑回购信号
-    # 实际回购数据需另外维护，此处留作扩展
+    # 7. 技术形态
+    pattern = tech.get("pattern", "")
+    if pattern == "上升通道":
+        summary["score"] += 0.4
+        summary["signals"].append(f"上升通道 (R²={tech.get('confidence', 'N/A')})")
+    elif pattern == "下降通道":
+        summary["score"] -= 0.4
+        summary["signals"].append(f"下降通道 (R²={tech.get('confidence', 'N/A')})")
+    elif pattern == "横盘震荡":
+        summary["signals"].append(f"横盘震荡 ({tech.get('reason', '')[:20]})")
+
+    # 8. 突破新高
+    breakout = tech.get("breakout", "")
+    if breakout == "突破新高":
+        summary["score"] += 0.3
+        summary["signals"].append(f"突破新高 强度{tech.get('strength', 0):.0f}%")
+    elif breakout == "跌破新低":
+        summary["score"] -= 0.3
+        summary["signals"].append(f"跌破新低 强度{tech.get('strength', 0):.0f}%")
 
     return summary
+
+
+def analyze_technical(code: str) -> dict:
+    """技术形态识别：通道分类 + 突破/跌破 + 低波动原因"""
+    result = {"pattern": "数据不足", "breakout": "无", "low_vol_reason": "", "updated_at": ""}
+    try:
+        end = dt.datetime.today().strftime("%Y-%m-%d")
+        start = (dt.datetime.today() - dt.timedelta(days=365)).strftime("%Y-%m-%d")
+        df = fetch_price(code, start, end)
+        if df is None or df.empty or len(df) < 30:
+            return result
+        result["updated_at"] = str(df["date"].iloc[-1].date())
+        # 通道分类
+        channel = classify_channel(df)
+        result["pattern"] = channel.get("pattern", "数据不足")
+        result["slope"] = channel.get("slope")
+        result["r2"] = channel.get("r2")
+        result["volatility"] = channel.get("volatility")
+        result["confidence"] = channel.get("confidence")
+        result["reason"] = channel.get("reason", "")
+        # 突破
+        breakout = analyze_breakout(df)
+        result["breakout"] = breakout.get("breakout", "无")
+        result["high_20"] = breakout.get("high_20")
+        result["low_20"] = breakout.get("low_20")
+        result["current"] = breakout.get("current")
+        result["strength"] = breakout.get("strength")
+        # 低波动原因
+        vol_reason = analyze_volatility_reason(df)
+        if vol_reason.get("is_low_vol"):
+            result["low_vol_reason"] = "; ".join(vol_reason.get("reasons", []))
+    except Exception:
+        pass
+    return result
 
 
 # ──────────────────────────────────────────────────────────────
