@@ -544,13 +544,14 @@ class SelectionPanel(ttk.Frame):
 
         header = ttk.Frame(self)
         header.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(header, text="选股分析 (股东/大单)", font=("Microsoft YaHei", 12, "bold")).pack(side=tk.LEFT)
+        ttk.Label(header, text="选股分析 (股东/大单/龙虎榜/质押/解禁/北向)",
+                  font=("Microsoft YaHei", 12, "bold")).pack(side=tk.LEFT)
         ttk.Button(header, text="刷新分析", command=self.refresh).pack(side=tk.RIGHT, padx=5)
         ttk.Button(header, text="导出报告", command=self.export_report).pack(side=tk.RIGHT, padx=5)
 
-        self.info_label = tk.Label(self, text="点击刷新分析获取股东/大单数据",
-                                    bg=COLORS["bg_primary"], fg=COLORS["text_secondary"],
-                                    font=("Microsoft YaHei", 9))
+        self.info_label = tk.Label(self, text="点击刷新分析获取多因子数据",
+                                   bg=COLORS["bg_primary"], fg=COLORS["text_secondary"],
+                                   font=("Microsoft YaHei", 9))
         self.info_label.pack(anchor=tk.W, padx=10, pady=(0, 5))
 
         table_frame = ttk.Frame(self)
@@ -559,24 +560,30 @@ class SelectionPanel(ttk.Frame):
         scrollbar = ttk.Scrollbar(table_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        columns = ("code", "name", "holder_now", "holder_prev", "holder_chg",
-                   "big_inflow", "super_big", "score", "signals")
+        columns = ("code", "name", "holder_now", "holder_chg", "big_inflow", "super_big",
+                   "lhb_times", "lhb_net", "pledge_risk", "release_ratio", "north_chg", "score", "signals")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings",
-                                 yscrollcommand=scrollbar.set, height=15)
+                                 yscrollcommand=scrollbar.set, height=18)
         self.tree.heading("code", text="代码")
         self.tree.heading("name", text="名称")
-        self.tree.heading("holder_now", text="股东数(最新)")
-        self.tree.heading("holder_prev", text="股东数(上期)")
+        self.tree.heading("holder_now", text="股东数")
         self.tree.heading("holder_chg", text="股东变化")
         self.tree.heading("big_inflow", text="大单净流入")
-        self.tree.heading("super_big", text="超大单净流入")
-        self.tree.heading("score", text="综合评分")
+        self.tree.heading("super_big", text="超大单")
+        self.tree.heading("lhb_times", text="龙虎榜")
+        self.tree.heading("lhb_net", text="机构净额")
+        self.tree.heading("pledge_risk", text="质押风险")
+        self.tree.heading("release_ratio", text="解禁占比%")
+        self.tree.heading("north_chg", text="北向变化")
+        self.tree.heading("score", text="评分")
         self.tree.heading("signals", text="信号")
         for col in columns:
-            self.tree.column(col, width=90, anchor=tk.CENTER)
+            self.tree.column(col, width=82, anchor=tk.CENTER)
         self.tree.column("code", width=100)
         self.tree.column("name", width=120)
-        self.tree.column("signals", width=200, anchor=tk.W)
+        self.tree.column("signals", width=220, anchor=tk.W)
+        self.tree.column("lhb_net", width=90)
+        self.tree.column("north_chg", width=90)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.tree.yview)
 
@@ -590,7 +597,7 @@ class SelectionPanel(ttk.Frame):
         if not self.pool_list:
             return
 
-        self.info_label.config(text="正在获取选股分析数据...", fg=COLORS["warning"])
+        self.info_label.config(text="正在获取多因子数据...", fg=COLORS["warning"])
         self.update()
 
         def _fetch():
@@ -612,11 +619,14 @@ class SelectionPanel(ttk.Frame):
             name = fetch_name(code)
             holder = row.get("holder", {})
             fund = row.get("fund_flow", {})
+            lhb = row.get("lhb", {})
+            pledge = row.get("pledge", {})
+            release = row.get("release", {})
+            north = row.get("north_flow", {})
             score = row.get("score", 0)
             signals = "; ".join(row.get("signals", []))
 
             h_now = holder.get("shareholder_count_now", "--") or "--"
-            h_prev = holder.get("shareholder_count_prev", "--") or "--"
             h_chg = holder.get("shareholder_change", "--")
             if h_chg is not None:
                 h_chg = f"{int(h_chg):+d}"
@@ -625,12 +635,25 @@ class SelectionPanel(ttk.Frame):
 
             big = fund.get("big_net_inflow") or 0
             super_big = fund.get("super_big_net_inflow") or 0
+            lhb_times = lhb.get("lhb_times") if lhb.get("lhb_times") is not None else "--"
+            lhb_net = lhb.get("lhb_inst_net") if lhb.get("lhb_inst_net") is not None else "--"
+            if lhb_net != "--":
+                lhb_net = f"{lhb_net/10000:.0f}万"
+            pledge_risk = pledge.get("pledge_risk") or "--"
+            release_ratio = release.get("release_ratio") if release.get("release_ratio") is not None else "--"
+            if release_ratio != "--":
+                release_ratio = f"{release_ratio:.2f}%"
+            north_chg = north.get("hold_change") if north.get("hold_change") is not None else "--"
+            if north_chg != "--":
+                north_chg = f"{north_chg/10000:.0f}万"
 
             tag = "positive" if score > 0.5 else "negative" if score < 0 else "neutral"
 
             self.tree.insert("", tk.END, values=(
-                code, name, h_now, h_prev, h_chg,
+                code, name, h_now, h_chg,
                 f"{big/10000:.0f}万", f"{super_big/10000:.0f}万",
+                lhb_times, lhb_net,
+                pledge_risk, release_ratio, north_chg,
                 f"{score:.2f}", signals
             ), tags=(tag,))
 
@@ -642,8 +665,8 @@ class SelectionPanel(ttk.Frame):
         path = os.path.join(self.report_dir, "portfolio_selection.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write("# 选股分析报告\n\n")
-            f.write("| 代码 | 名称 | 股东数(最新) | 股东数(上期) | 股东变化 | 大单净流入 | 超大单 | 评分 | 信号 |\n")
-            f.write("|---|---|---|---|---|---|---|---|---|\n")
+            f.write("| 代码 | 名称 | 股东数 | 股东变化 | 大单 | 超大单 | 龙虎榜 | 机构净额 | 质押风险 | 解禁占比 | 北向变化 | 评分 | 信号 |\n")
+            f.write("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
             for item in self.tree.get_children():
                 vals = self.tree.item(item)["values"]
                 f.write(f"| {'| '.join(str(v) for v in vals)} |\n")

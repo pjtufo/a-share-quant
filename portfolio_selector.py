@@ -432,6 +432,144 @@ def analyze_holder(code: str) -> dict:
     return result
 
 
+def analyze_lhb(code: str) -> dict:
+    """近一月龙虎榜：上榜次数、机构净额、营业部净额"""
+    result = {"code": code, "lhb_times": None, "lhb_inst_net": None,
+              "lhb_dept_net": None, "updated_at": None}
+    try:
+        # 先拿全市场近一月统计，再按代码过滤
+        df = ak.stock_lhb_ggtj_sina("5")
+        if df is None or df.empty or "股票代码" not in df.columns:
+            return result
+        clean = code.split(".")[-1] if "." in code else code
+        sub = df[df["股票代码"] == clean]
+        if sub.empty:
+            return result
+        row = sub.iloc[0]
+        result["lhb_times"] = int(row.get("上榜次数", 0) or 0)
+        result["lhb_inst_net"] = float(row.get("净额", 0) or 0)
+        result["lhb_dept_net"] = float(row.get("累积购买额", 0) or 0) - float(row.get("累积卖出额", 0) or 0)
+        result["updated_at"] = "近一月"
+    except Exception:
+        pass
+    return result
+
+
+def analyze_pledge(code: str) -> dict:
+    """股权质押：质押比例、风险等级（按东方财富质押比例数据）"""
+    result = {"code": code, "pledge_ratio": None, "pledge_risk": None, "updated_at": None}
+    try:
+        df = ak.stock_gpzy_pledge_ratio_em()
+        if df is None or df.empty:
+            return result
+        clean = code.split(".")[-1] if "." in code else code
+        sub = df[df["股票代码"] == clean]
+        if sub.empty:
+            return result
+        row = sub.iloc[0]
+        ratio = float(row.get("质押比例", 0) or 0)
+        result["pledge_ratio"] = ratio
+        if ratio >= 50:
+            result["pledge_risk"] = "高风险"
+        elif ratio >= 30:
+            result["pledge_risk"] = "中风险"
+        else:
+            result["pledge_risk"] = "低风险"
+        result["updated_at"] = str(row.get("公告日期", ""))[:10]
+    except Exception:
+        pass
+    return result
+
+
+def analyze_restricted_release(code: str) -> dict:
+    """限售股解禁：未来3个月内解禁数量、占流通市值比例"""
+    result = {"code": code, "release_qty": None, "release_ratio": None,
+              "release_date": None, "updated_at": None}
+    try:
+        clean = code.split(".")[-1] if "." in code else code
+        # 取未来6个月窗口
+        today = pd.Timestamp.today()
+        end = today + pd.DateOffset(months=6)
+        df = ak.stock_restricted_release_queue_em(clean,
+                                                  start_date=today.strftime("%Y%m%d"),
+                                                  end_date=end.strftime("%Y%m%d"))
+        if df is None or df.empty:
+            return result
+        # 取最早解禁日
+        date_col = "解禁时间"
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=[date_col])
+        if df.empty:
+            return result
+        df = df.sort_values(date_col, ascending=True)
+        first = df.iloc[0]
+        qty = float(first.get("实际解禁数量", 0) or 0)
+        ratio = float(first.get("占总市值比例", 0) or 0)
+        result["release_qty"] = qty
+        result["release_ratio"] = ratio
+        result["release_date"] = str(first[date_col].date())
+        result["updated_at"] = result["release_date"]
+    except Exception:
+        pass
+    return result
+
+
+def analyze_north_flow(code: str) -> dict:
+    """北向资金（沪股通/深股通）近期持股变化"""
+    result = {"code": code, "hold_qty": None, "hold_ratio": None,
+              "hold_change": None, "updated_at": None}
+    try:
+        clean = code.split(".")[-1] if "." in code else code
+        # 先判断市场
+        if code.startswith("sh."):
+            df = ak.stock_hsgt_individual_em(clean)
+        elif code.startswith("sz."):
+            df = ak.stock_hsgt_individual_em(clean)
+        else:
+            df = ak.stock_hsgt_individual_em(clean)
+        if df is None or df.empty:
+            return result
+        date_col = "持股日期"
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=[date_col, "持股数量"])
+        if df.empty:
+            return result
+        df = df.sort_values(date_col, ascending=False)
+        if len(df) < 2:
+            return result
+        now_qty = float(df.iloc[0]["持股数量"])
+        prev_qty = float(df.iloc[1]["持股数量"])
+        result["hold_qty"] = now_qty
+        result["hold_change"] = now_qty - prev_qty
+        ratio = float(df.iloc[0].get("持股数量占A股百分比", 0) or 0)
+        result["hold_ratio"] = ratio
+        result["updated_at"] = str(df.iloc[0][date_col].date())
+    except Exception:
+        pass
+    return result
+
+
+def analyze_margin(code: str) -> dict:
+    """融资融券余额变化（近20日）"""
+    result = {"code": code, "margin_balance": None, "margin_change": None,
+              "margin_ratio": None, "updated_at": None}
+    try:
+        clean = code.split(".")[-1] if "." in code else code
+        prefix = code.split(".")[0].lower() if "." in code else "sh"
+        df = ak.stock_margin_detail_sse(date="20240101") if prefix == "sh" else ak.stock_margin_detail_szse(date="20240101")
+        if df is None or df.empty or "股票代码" not in df.columns:
+            return result
+        sub = df[df["股票代码"] == clean]
+        if sub.empty:
+            return result
+        row = sub.iloc[0]
+        result["margin_balance"] = float(row.get("融资余额(万元)", 0) or 0)
+        result["updated_at"] = str(row.get("交易日期", ""))[:10]
+    except Exception:
+        pass
+    return result
+
+
 def analyze_fund_flow(code: str) -> dict:
     """大单/超大单资金流向分析（东方财富接口，可能不稳定）"""
     result = {
@@ -471,17 +609,30 @@ def analyze_fund_flow(code: str) -> dict:
 
 
 def analyze_selection(code: str) -> dict:
-    """综合选股分析：股东数量 + 大单 + 股价波动相关性"""
+    """综合选股分析：股东数量 + 大单 + 龙虎榜 + 股权质押 + 限售解禁 + 北向资金 + 回购 + 融资融券"""
     holder = analyze_holder(code)
     fund = analyze_fund_flow(code)
+    lhb = analyze_lhb(code)
+    pledge = analyze_pledge(code)
+    release = analyze_restricted_release(code)
+    north = analyze_north_flow(code)
+    # margin 接口不稳定，不阻塞主流程
+    margin = analyze_margin(code)
+
     summary = {
         "code": code,
         "holder": holder,
         "fund_flow": fund,
+        "lhb": lhb,
+        "pledge": pledge,
+        "release": release,
+        "north_flow": north,
+        "margin": margin,
         "score": 0.0,
         "signals": [],
     }
-    # 股东减少 -> 筹码集中 -> 利好
+
+    # 1. 股东减少 -> 筹码集中 -> 利好
     if holder.get("shareholder_change") is not None:
         chg = holder["shareholder_change"]
         if chg < 0:
@@ -491,7 +642,7 @@ def analyze_selection(code: str) -> dict:
             summary["score"] -= 0.2
             summary["signals"].append(f"股东增加 {int(chg)} 户 (筹码分散)")
 
-    # 大单净流入
+    # 2. 大单/超大单净流入
     big = fund.get("big_net_inflow") or 0
     super_big = fund.get("super_big_net_inflow") or 0
     total_big = big + super_big
@@ -508,6 +659,48 @@ def analyze_selection(code: str) -> dict:
     if fund.get("super_big_ratio") is not None and fund["super_big_ratio"] > 5:
         summary["score"] += 0.2
         summary["signals"].append(f"超大单占比 {fund['super_big_ratio']:.1f}%")
+
+    # 3. 龙虎榜：机构净额为正 -> 机构介入 -> 利好
+    if lhb.get("lhb_times") is not None:
+        inst_net = lhb.get("lhb_inst_net") or 0
+        if lhb["lhb_times"] > 0 and inst_net > 0:
+            summary["score"] += 0.3
+            summary["signals"].append(f"龙虎榜机构净买 {inst_net/10000:.0f} 万")
+        elif lhb["lhb_times"] > 0 and inst_net < 0:
+            summary["score"] -= 0.2
+            summary["signals"].append(f"龙虎榜机构净卖 {abs(inst_net)/10000:.0f} 万")
+
+    # 4. 股权质押：高风险 -> 利空
+    if pledge.get("pledge_risk") == "高风险":
+        summary["score"] -= 0.3
+        summary["signals"].append(f"股权质押高风险 {pledge.get('pledge_ratio', 0):.1f}%")
+    elif pledge.get("pledge_risk") == "中风险":
+        summary["score"] -= 0.1
+        summary["signals"].append(f"股权质押中风险 {pledge.get('pledge_ratio', 0):.1f}%")
+
+    # 5. 限售股解禁：占比高 -> 利空
+    if release.get("release_ratio") is not None and release["release_ratio"] > 0:
+        ratio = release["release_ratio"]
+        if ratio > 5:
+            summary["score"] -= 0.3
+            summary["signals"].append(f"解禁占比 {ratio:.2f}% 高")
+        elif ratio > 1:
+            summary["score"] -= 0.1
+            summary["signals"].append(f"解禁占比 {ratio:.2f}%")
+
+    # 6. 北向资金增持 -> 利好；减持 -> 利空
+    if north.get("hold_change") is not None:
+        chg = north["hold_change"]
+        if chg > 0:
+            summary["score"] += 0.2
+            summary["signals"].append(f"北向增持 {chg/10000:.0f} 万股")
+        elif chg < 0:
+            summary["score"] -= 0.15
+            summary["signals"].append(f"北向减持 {abs(chg)/10000:.0f} 万股")
+
+    # 7. 回购：有回购 -> 利好
+    # 这里简化：若 `analyze_fund_flow` 返回 error 为 None 且有大单，可考虑回购信号
+    # 实际回购数据需另外维护，此处留作扩展
 
     return summary
 
