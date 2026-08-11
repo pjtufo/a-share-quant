@@ -25,6 +25,8 @@ from portfolio_selector import (
     backtest_portfolio, generate_report, plot_portfolio, plot_score_breakdown,
     monitor_news, DEFAULT_POOL,
     analyze_selection, analyze_technical,
+    analyze_fund_flow_trend, analyze_holder_trend, analyze_north_flow_trend,
+    analyze_ma_alignment, analyze_pattern_double, analyze_support_resistance,
 )
 
 # ──────────────────────────────────────────────────────────────
@@ -694,6 +696,239 @@ class SelectionPanel(ttk.Frame):
 
 
 # ──────────────────────────────────────────────────────────────
+# 个股诊断器面板
+# ──────────────────────────────────────────────────────────────
+class DiagnosisPanel(ttk.Frame):
+    def __init__(self, parent, pool_list, report_dir):
+        super().__init__(parent)
+        self.pool_list = pool_list
+        self.report_dir = report_dir
+
+        header = ttk.Frame(self)
+        header.pack(fill=tk.X, padx=10, pady=5)
+        ttk.Label(header, text="🔬 个股诊断器 (多因子 + 技术形态 + 趋势 + 场景)",
+                  font=("Microsoft YaHei", 12, "bold")).pack(side=tk.LEFT)
+        ttk.Button(header, text="诊断选中", command=self.diagnose_selected).pack(side=tk.RIGHT, padx=5)
+
+        main = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        main.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        # 左侧股票列表
+        left = ttk.Frame(main)
+        main.add(left, weight=1)
+        ttk.Label(left, text="股票池 (双击选择)").pack(anchor=tk.W, padx=5, pady=5)
+        self.pool_tree = ttk.Treeview(left, columns=("code", "name"), show="headings", height=20)
+        self.pool_tree.heading("code", text="代码")
+        self.pool_tree.heading("name", text="名称")
+        self.pool_tree.column("code", width=100)
+        self.pool_tree.column("name", width=120)
+        self.pool_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.pool_tree.bind("<Double-1>", lambda e: self.diagnose_selected())
+        for code in self.pool_list:
+            self.pool_tree.insert("", tk.END, values=(code, fetch_name(code)))
+
+        # 右侧诊断结果
+        right = ttk.Frame(main)
+        main.add(right, weight=3)
+        self.info_label = tk.Label(right, text="双击左侧股票开始诊断",
+                                   bg=COLORS["bg_primary"], fg=COLORS["text_secondary"],
+                                   font=("Microsoft YaHei", 9))
+        self.info_label.pack(anchor=tk.W, padx=10, pady=5)
+
+        self.result_text = tk.Text(right, wrap=tk.WORD, font=("Consolas", 10),
+                                   bg=COLORS["bg_primary"], fg=COLORS["text_primary"],
+                                   relief=tk.FLAT, padx=10, pady=10)
+        self.result_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.result_text.tag_config("title", font=("Microsoft YaHei", 12, "bold"), foreground=COLORS["accent"])
+        self.result_text.tag_config("section", font=("Microsoft YaHei", 10, "bold"), foreground=COLORS["accent"])
+        self.result_text.tag_config("positive", foreground=COLORS["success"])
+        self.result_text.tag_config("negative", foreground=COLORS["danger"])
+        self.result_text.tag_config("neutral", foreground=COLORS["text_secondary"])
+
+    def diagnose_selected(self):
+        sel = self.pool_tree.selection()
+        if not sel:
+            messagebox.showinfo("提示", "请先在左侧选择一只股票")
+            return
+        code = self.pool_tree.item(sel[0])["values"][0]
+        self.result_text.delete("1.0", tk.END)
+        self.info_label.config(text=f"正在诊断 {code} ...", fg=COLORS["warning"])
+        self.update()
+
+        def _run():
+            try:
+                result = analyze_selection(code)
+                self.root.after(0, lambda: self._show_diagnosis(code, result))
+            except Exception as e:
+                self.root.after(0, lambda: self.info_label.config(
+                    text=f"诊断失败: {str(e)[:60]}", fg=COLORS["danger"]))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _show_diagnosis(self, code: str, result: dict):
+        self.result_text.delete("1.0", tk.END)
+        self.info_label.config(text=f"诊断完成: {code} | 评分 {result['score']:.2f}",
+                               fg=COLORS["success"])
+        txt = self.result_text
+
+        def w(tag, text):
+            txt.insert(tk.END, text + "\n", tag)
+
+        def section(title):
+            w("section", f"\n▌ {title}")
+            w("neutral", "─" * 40)
+
+        def kv(key, val, fmt=str):
+            if val is None:
+                return
+            w("neutral", f"  {key}: {fmt(val)}")
+
+        # 标题
+        name = fetch_name(code)
+        w("title", f"【{code} {name}】 综合诊断")
+        w("neutral", f"综合评分: {result['score']:.2f}")
+        scenario = result.get("scenario", {})
+        w("neutral", f"综合场景: {scenario.get('scenario','未知')} (建议: {scenario.get('action','观望')})")
+        w("neutral", f"置信度: {scenario.get('confidence', 0):.0%}")
+
+        # 1. 股东分析
+        section("1. 股东分析")
+        holder = result.get("holder", {})
+        holder_trend = result.get("holder_trend", {})
+        kv("当前股东数", holder.get("shareholder_count_now"), lambda x: f"{x:,} 户")
+        chg = holder.get("shareholder_change")
+        if chg is not None:
+            color = "positive" if chg < 0 else "negative" if chg > 0 else "neutral"
+            w(color, f"  股东变化: {chg:+.0f} 户 ({'筹码集中' if chg < 0 else '筹码分散' if chg > 0 else '持平'})")
+        kv("股东趋势", holder_trend.get("trend"))
+        kv("连续期数", holder_trend.get("consecutive_periods"), lambda x: f"{x} 期")
+        kv("趋势强度", holder_trend.get("intensity"), lambda x: f"{x:.2f}")
+        for sig in result.get("signals", []):
+            if "股东" in sig:
+                w("neutral", f"  • {sig}")
+
+        # 2. 大单资金
+        section("2. 大单/超大单资金")
+        fund = result.get("fund_flow", {})
+        fund_trend = result.get("fund_trend", {})
+        kv("大单净流入", fund.get("big_net_inflow"), lambda x: f"{x/10000:.0f} 万")
+        kv("超大单净流入", fund.get("super_big_net_inflow"), lambda x: f"{x/10000:.0f} 万")
+        kv("大单占比", fund.get("big_ratio"), lambda x: f"{x:.2f}%")
+        kv("超大单占比", fund.get("super_big_ratio"), lambda x: f"{x:.2f}%")
+        kv("资金趋势", fund_trend.get("trend"))
+        kv("连续天数", fund_trend.get("consecutive_days"), lambda x: f"{x} 日")
+        kv("趋势方向", fund_trend.get("direction"))
+        kv("趋势强度", fund_trend.get("intensity"), lambda x: f"{x:.2f}")
+        for sig in result.get("signals", []):
+            if "大单" in sig or "资金" in sig:
+                w("neutral", f"  • {sig}")
+
+        # 3. 龙虎榜
+        section("3. 龙虎榜")
+        lhb = result.get("lhb", {})
+        kv("上榜次数", lhb.get("lhb_times"), lambda x: f"{x} 次")
+        kv("机构净额", lhb.get("lhb_inst_net"), lambda x: f"{x/10000:.0f} 万")
+        kv("游资净额", lhb.get("lhb_retail_net"), lambda x: f"{x/10000:.0f} 万")
+        for sig in result.get("signals", []):
+            if "龙虎榜" in sig:
+                w("neutral", f"  • {sig}")
+
+        # 4. 股权质押
+        section("4. 股权质押")
+        pledge = result.get("pledge", {})
+        kv("质押比例", pledge.get("pledge_ratio"), lambda x: f"{x:.2f}%")
+        kv("质押风险", pledge.get("pledge_risk"))
+        for sig in result.get("signals", []):
+            if "质押" in sig:
+                w("neutral", f"  • {sig}")
+
+        # 5. 限售解禁
+        section("5. 限售解禁")
+        release = result.get("release", {})
+        kv("解禁数量", release.get("release_shares"), lambda x: f"{x/10000:.0f} 万股")
+        kv("解禁占比", release.get("release_ratio"), lambda x: f"{x:.2f}%")
+        kv("解禁日期", release.get("release_date"))
+        for sig in result.get("signals", []):
+            if "解禁" in sig:
+                w("neutral", f"  • {sig}")
+
+        # 6. 北向资金
+        section("6. 北向资金")
+        north = result.get("north_flow", {})
+        north_trend = result.get("north_trend", {})
+        kv("持股数量", north.get("hold_count"), lambda x: f"{x/10000:.0f} 万股")
+        kv("持股变化", north.get("hold_change"), lambda x: f"{x/10000:.0f} 万股")
+        kv("北向趋势", north_trend.get("trend"))
+        kv("连续天数", north_trend.get("consecutive_days"), lambda x: f"{x} 日")
+        kv("趋势方向", north_trend.get("direction"))
+        kv("变化总量", north_trend.get("total_change"), lambda x: f"{x/10000:.0f} 万股")
+        for sig in result.get("signals", []):
+            if "北向" in sig:
+                w("neutral", f"  • {sig}")
+
+        # 7. 技术形态
+        section("7. 技术形态")
+        tech = result.get("tech", {})
+        kv("形态识别", tech.get("pattern"))
+        kv("通道斜率", tech.get("slope"), lambda x: f"{x:.4f}" if isinstance(x, (int, float)) else str(x))
+        kv("R² 置信", tech.get("confidence"), lambda x: f"{x:.0f}%" if isinstance(x, (int, float)) else str(x))
+        kv("年化波动率", tech.get("volatility"), lambda x: f"{x:.2f}%" if isinstance(x, (int, float)) else str(x))
+        kv("突破状态", tech.get("breakout"))
+        kv("20日高点", tech.get("high_20"), lambda x: f"{x:.2f}" if isinstance(x, (int, float)) else str(x))
+        kv("20日低点", tech.get("low_20"), lambda x: f"{x:.2f}" if isinstance(x, (int, float)) else str(x))
+        kv("当前价", tech.get("current"), lambda x: f"{x:.2f}" if isinstance(x, (int, float)) else str(x))
+        kv("突破强度", tech.get("strength"), lambda x: f"{x:.0f}%" if isinstance(x, (int, float)) else str(x))
+        kv("低波动原因", tech.get("low_vol_reason"))
+        if tech.get("updated_at"):
+            kv("数据日期", tech.get("updated_at"))
+
+        # 7.1 均线排列
+        ma = tech.get("ma_alignment", {})
+        if ma:
+            kv("均线排列", ma.get("alignment"))
+            kv("MA5", ma.get("ma5"), lambda x: f"{x:.2f}")
+            kv("MA10", ma.get("ma10"), lambda x: f"{x:.2f}")
+            kv("MA20", ma.get("ma20"), lambda x: f"{x:.2f}")
+            kv("MA60", ma.get("ma60"), lambda x: f"{x:.2f}")
+            kv("均线信号", ma.get("signal"))
+
+        # 7.2 双底双顶
+        double = tech.get("double_pattern", {})
+        if double:
+            kv("形态", double.get("pattern"))
+            kv("颈线", double.get("neckline"), lambda x: f"{x:.2f}")
+            kv("目标价", double.get("target"), lambda x: f"{x:.2f}")
+            kv("可靠性", double.get("reliability"), lambda x: f"{x:.0f}%")
+            kv("已确认", double.get("confirmation"))
+
+        # 7.3 支撑阻力
+        sr = tech.get("support_resistance", {})
+        if sr:
+            kv("支撑位", sr.get("support"), lambda x: f"{x:.2f}")
+            kv("支撑强度", sr.get("support_strength"), lambda x: f"{x} 次")
+            kv("阻力位", sr.get("resistance"), lambda x: f"{x:.2f}")
+            kv("阻力强度", sr.get("resistance_strength"), lambda x: f"{x} 次")
+            kv("当前位置", sr.get("position"))
+
+        # 综合信号汇总
+        section("8. 综合信号")
+        for sig in result.get("signals", []):
+            if any(k in sig for k in ["场景", "均线", "W底", "M头", "突破", "跌破", "趋势"]):
+                w("positive" if "利好" in sig or "增持" in sig or "流入" in sig or "上升" in sig or "W底" in sig else
+                  "negative" if "利空" in sig or "减持" in sig or "流出" in sig or "下降" in sig or "M头" in sig or "跌破" in sig else
+                  "neutral", f"  ► {sig}")
+
+        # 底部建议
+        action = scenario.get("action", "观望")
+        if action == "买入":
+            w("positive", f"\n★ 建议操作: {action}")
+        elif action == "卖出":
+            w("negative", f"\n★ 建议操作: {action}")
+        else:
+            w("neutral", f"\n★ 建议操作: {action}")
+
+
+# ──────────────────────────────────────────────────────────────
 # 评分面板
 # ──────────────────────────────────────────────────────────────
 class ScorePanel(ttk.Frame):
@@ -870,10 +1105,15 @@ class PortfolioApp:
         self.selection_panel = SelectionPanel(self.notebook, self.pool_list, self.report_dir)
         self.notebook.add(self.selection_panel, text="🎯 选股分析")
 
+        self.diagnosis_panel = DiagnosisPanel(self.notebook, self.pool_list, self.report_dir)
+        self.notebook.add(self.diagnosis_panel, text="🔬 个股诊断")
+
     def _on_pool_change(self):
         self.score_panel.pool_list = self.pool_list.copy()
         if hasattr(self, 'selection_panel'):
             self.selection_panel.pool_list = self.pool_list.copy()
+        if hasattr(self, 'diagnosis_panel'):
+            self.diagnosis_panel.pool_list = self.pool_list.copy()
         self.status_var.set(f"股票池已更新: {len(self.pool_list)} 只")
 
     def _set_running(self, running: bool):
