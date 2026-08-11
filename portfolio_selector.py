@@ -669,6 +669,316 @@ def analyze_volatility_reason(df: pd.DataFrame) -> dict:
     return result
 
 
+def analyze_fund_flow_trend(code: str, days: int = 10) -> dict:
+    """大单/超大单资金流向趋势：连续净流入/流出天数、趋势强度"""
+    result = {"trend": "数据不足", "consecutive_days": 0, "direction": "无",
+              "intensity": 0, "updated_at": ""}
+    try:
+        clean = code.split(".")[-1] if "." in code else code
+        prefix = code.split(".")[0].lower() if "." in code else "sh"
+        df = ak.stock_individual_fund_flow(stock=clean, market=prefix)
+        if df is None or df.empty or "日期" not in df.columns:
+            return result
+        df["日期"] = pd.to_datetime(df["日期"], errors="coerce")
+        df = df.sort_values("日期", ascending=False).head(days)
+        if df.empty:
+            return result
+        df = df.dropna(subset=["日期", "大单净流入-净额"])
+        if df.empty:
+            return result
+        df = df.sort_values("日期")
+        df["net"] = df["大单净流入-净额"] + df["超大单净流入-净额"]
+        positive_days = (df["net"] > 0).sum()
+        negative_days = (df["net"] < 0).sum()
+        total_net = float(df["net"].sum())
+        result["consecutive_days"] = int(positive_days)
+        result["updated_at"] = str(df["日期"].iloc[-1].date())
+        if positive_days >= days * 0.7:
+            result["trend"] = "资金持续流入"
+            result["direction"] = "流入"
+            result["intensity"] = min(abs(total_net) / 10000, 100)
+        elif negative_days >= days * 0.7:
+            result["trend"] = "资金持续流出"
+            result["direction"] = "流出"
+            result["intensity"] = min(abs(total_net) / 10000, 100)
+        else:
+            result["trend"] = "资金震荡"
+            result["direction"] = "震荡"
+            result["intensity"] = 0
+    except Exception:
+        pass
+    return result
+
+
+def analyze_holder_trend(code: str) -> dict:
+    """股东数量变化趋势：连续减少/增加期数、趋势强度"""
+    result = {"trend": "数据不足", "consecutive_periods": 0, "direction": "无",
+              "total_change": 0, "intensity": 0, "updated_at": ""}
+    try:
+        clean = code.split(".")[-1] if "." in code else code
+        df = ak.stock_main_stock_holder(stock=clean)
+        if df is None or df.empty:
+            return result
+        date_col = "截至日期" if "截至日期" in df.columns else "公告日期"
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=[date_col, "股东总数"])
+        if df.empty:
+            return result
+        agg = df.groupby(date_col)["股东总数"].first().sort_index(ascending=False)
+        if len(agg) < 3:
+            return result
+        result["updated_at"] = str(agg.index[0].date())
+        recent = agg.head(5)
+        changes = recent.diff().dropna()
+        if changes.empty:
+            return result
+        pos = (changes > 0).sum()
+        neg = (changes < 0).sum()
+        total_change = float(changes.sum())
+        result["total_change"] = total_change
+        result["consecutive_periods"] = int(abs(total_change) / (abs(changes.mean()) + 1))
+        if neg >= len(changes) * 0.7:
+            result["trend"] = "股东持续减少"
+            result["direction"] = "减少"
+            result["intensity"] = min(abs(total_change) / 10000, 10)
+        elif pos >= len(changes) * 0.7:
+            result["trend"] = "股东持续增加"
+            result["direction"] = "增加"
+            result["intensity"] = min(abs(total_change) / 10000, 10)
+        else:
+            result["trend"] = "股东波动"
+            result["direction"] = "波动"
+    except Exception:
+        pass
+    return result
+
+
+def analyze_north_flow_trend(code: str) -> dict:
+    """北向资金持股变化趋势：连续增持/减持判断"""
+    result = {"trend": "数据不足", "consecutive_days": 0, "direction": "无",
+              "total_change": 0, "intensity": 0, "updated_at": ""}
+    try:
+        clean = code.split(".")[-1] if "." in code else code
+        df = ak.stock_hsgt_individual_em(clean)
+        if df is None or df.empty or "持股日期" not in df.columns:
+            return result
+        df["持股日期"] = pd.to_datetime(df["持股日期"], errors="coerce")
+        df = df.dropna(subset=["持股日期", "持股数量"])
+        if df.empty:
+            return result
+        df = df.sort_values("持股日期", ascending=False).head(10)
+        if len(df) < 3:
+            return result
+        df = df.sort_values("持股日期")
+        changes = df["持股数量"].diff().dropna()
+        pos = (changes > 0).sum()
+        neg = (changes < 0).sum()
+        total_change = float(changes.sum())
+        result["total_change"] = total_change
+        result["consecutive_days"] = int(abs(total_change) / (abs(changes.mean()) + 1))
+        result["updated_at"] = str(df["持股日期"].iloc[-1].date())
+        if pos >= len(changes) * 0.7:
+            result["trend"] = "北向持续增持"
+            result["direction"] = "增持"
+            result["intensity"] = min(abs(total_change) / 10000, 100)
+        elif neg >= len(changes) * 0.7:
+            result["trend"] = "北向持续减持"
+            result["direction"] = "减持"
+            result["intensity"] = min(abs(total_change) / 10000, 100)
+        else:
+            result["trend"] = "北向波动"
+            result["direction"] = "波动"
+    except Exception:
+        pass
+    return result
+
+
+def analyze_ma_alignment(df: pd.DataFrame) -> dict:
+    """均线排列：多头排列/空头排列/粘合"""
+    result = {"alignment": "数据不足", "ma5": None, "ma10": None, "ma20": None,
+              "ma60": None, "signal": "无"}
+    try:
+        if df is None or len(df) < 60:
+            return result
+        close = df["close"]
+        ma5 = close.rolling(5).mean().iloc[-1]
+        ma10 = close.rolling(10).mean().iloc[-1]
+        ma20 = close.rolling(20).mean().iloc[-1]
+        ma60 = close.rolling(60).mean().iloc[-1]
+        result["ma5"] = round(float(ma5), 2)
+        result["ma10"] = round(float(ma10), 2)
+        result["ma20"] = round(float(ma20), 2)
+        result["ma60"] = round(float(ma60), 2)
+        if ma5 > ma10 > ma20 > ma60:
+            result["alignment"] = "多头排列"
+            result["signal"] = "强势上涨"
+        elif ma5 < ma10 < ma20 < ma60:
+            result["alignment"] = "空头排列"
+            result["signal"] = "弱势下跌"
+        elif abs(ma5 - ma10) / ma10 < 0.01 and abs(ma10 - ma20) / ma20 < 0.01:
+            result["alignment"] = "均线粘合"
+            result["signal"] = "变盘在即"
+        else:
+            result["alignment"] = "交叉排列"
+            result["signal"] = "震荡整理"
+    except Exception:
+        pass
+    return result
+
+
+def analyze_pattern_double(df: pd.DataFrame) -> dict:
+    """双底(W底)/双顶(M头)识别"""
+    result = {"pattern": "无", "confirmation": False, "neckline": None,
+              "target": None, "reliability": 0}
+    try:
+        if df is None or len(df) < 60:
+            return result
+        close = df["close"].tail(60)
+        highs = close.rolling(10).max()
+        lows = close.rolling(10).min()
+        # 简化：找局部极值点
+        peaks = []
+        troughs = []
+        for i in range(5, len(close) - 5):
+            if close.iloc[i] == highs.iloc[i] and close.iloc[i] > close.iloc[i-1] and close.iloc[i] > close.iloc[i+1]:
+                peaks.append((i, close.iloc[i]))
+            if close.iloc[i] == lows.iloc[i] and close.iloc[i] < close.iloc[i-1] and close.iloc[i] < close.iloc[i+1]:
+                troughs.append((i, close.iloc[i]))
+        # 双顶
+        if len(peaks) >= 2:
+            p1, p2 = peaks[-2], peaks[-1]
+            if abs(p1[1] - p2[1]) / p1[1] < 0.03:
+                neckline = float(close.iloc[min(p1[0], p2[0])+2:max(p1[0], p2[0])-2].min())
+                result["pattern"] = "M头"
+                result["neckline"] = round(neckline, 2)
+                result["target"] = round(neckline - (max(p1[1], p2[1]) - neckline), 2)
+                result["reliability"] = 60
+                if close.iloc[-1] < neckline:
+                    result["confirmation"] = True
+                    result["reliability"] = 80
+        # 双底
+        if len(troughs) >= 2 and result["pattern"] == "无":
+            t1, t2 = troughs[-2], troughs[-1]
+            if abs(t1[1] - t2[1]) / t1[1] < 0.03:
+                neckline = float(close.iloc[min(t1[0], t2[0])+2:max(t1[0], t2[0])-2].max())
+                result["pattern"] = "W底"
+                result["neckline"] = round(neckline, 2)
+                result["target"] = round(neckline + (neckline - min(t1[1], t2[1])), 2)
+                result["reliability"] = 60
+                if close.iloc[-1] > neckline:
+                    result["confirmation"] = True
+                    result["reliability"] = 80
+    except Exception:
+        pass
+    return result
+
+
+def analyze_support_resistance(df: pd.DataFrame) -> dict:
+    """支撑/阻力位识别：近期高低点、关键位置"""
+    result = {"support": None, "resistance": None, "support_strength": 0,
+              "resistance_strength": 0, "position": "中性"}
+    try:
+        if df is None or len(df) < 30:
+            return result
+        close = df["close"].tail(60)
+        recent_low = float(close.tail(20).min())
+        recent_high = float(close.tail(20).max())
+        current = float(close.iloc[-1])
+        result["support"] = round(recent_low, 2)
+        result["resistance"] = round(recent_high, 2)
+        if recent_high != recent_low:
+            position = (current - recent_low) / (recent_high - recent_low)
+            result["position"] = f"{position*100:.0f}%"
+            result["support_strength"] = int((1 - position) * 100)
+            result["resistance_strength"] = int(position * 100)
+    except Exception:
+        pass
+    return result
+
+
+def classify_scenario(selection: dict) -> dict:
+    """综合场景判断：基于多因子组合输出当前股票处于何种场景"""
+    result = {"scenario": "未知", "confidence": 0, "description": "", "action": "观望"}
+    try:
+        tech = selection.get("tech", {})
+        holder = selection.get("holder", {})
+        north = selection.get("north_flow", {})
+        fund = selection.get("fund_flow", {})
+        lhb = selection.get("lhb", {})
+        pledge = selection.get("pledge", {})
+        release = selection.get("release", {})
+
+        pattern = tech.get("pattern", "数据不足")
+        breakout = tech.get("breakout", "无")
+        ma_align = tech.get("ma_alignment", {}).get("alignment", "数据不足")
+        double = tech.get("double_pattern", {}).get("pattern", "无")
+        score = selection.get("score", 0)
+
+        # 场景1：强势上涨
+        if pattern == "上升通道" and breakout == "突破新高" and score > 0.8:
+            result["scenario"] = "强势上涨"
+            result["confidence"] = 85
+            result["description"] = "技术形态+资金+评分共振，趋势强劲"
+            result["action"] = "持有/回踩介入"
+        # 场景2：弱势下跌
+        elif pattern == "下降通道" and breakout == "跌破新低" and score < -0.5:
+            result["scenario"] = "弱势下跌"
+            result["confidence"] = 80
+            result["description"] = "趋势向下+资金流出+评分偏空，规避"
+            result["action"] = "空仓/减仓"
+        # 场景3：横盘震荡
+        elif pattern == "横盘震荡":
+            result["scenario"] = "横盘震荡"
+            result["confidence"] = 70
+            if tech.get("low_vol_reason"):
+                result["description"] = f"长期波动不大：{tech['low_vol_reason'][:40]}"
+            else:
+                result["description"] = "区间震荡，等待方向选择"
+            result["action"] = "区间操作/等待突破"
+        # 场景4：底部反转
+        elif double == "W底" and breakout == "突破新高" and north.get("hold_change", 0) > 0:
+            result["scenario"] = "底部反转"
+            result["confidence"] = 75
+            result["description"] = "W底形态+北向资金增持，可能反转"
+            result["action"] = "轻仓试多"
+        # 场景5：顶部反转
+        elif double == "M头" and breakout == "跌破新低":
+            result["scenario"] = "顶部反转"
+            result["confidence"] = 70
+            result["description"] = "M头形态+跌破颈线，可能转势"
+            result["action"] = "减仓/止盈"
+        # 场景6：突破待确认
+        elif breakout == "突破新高" or breakout == "跌破新低":
+            result["scenario"] = "突破待确认"
+            result["confidence"] = 50
+            result["description"] = f"{breakout}，等待3日确认"
+            result["action"] = "观察确认后跟进"
+        # 场景7：均线粘合变盘
+        elif ma_align == "均线粘合":
+            result["scenario"] = "变盘临界"
+            result["confidence"] = 55
+            result["description"] = "均线粘合，短期选择方向"
+            result["action"] = "等待方向明确"
+        else:
+            result["scenario"] = "震荡整理"
+            result["confidence"] = 40
+            result["description"] = "无明确趋势，谨慎参与"
+            result["action"] = "观望"
+
+        # 特殊风险调整
+        if pledge.get("pledge_risk") == "高风险":
+            result["description"] += "；股权质押高风险"
+            result["action"] = "规避"
+            result["confidence"] = max(result["confidence"] - 10, 0)
+        if release.get("release_ratio") and release["release_ratio"] > 5:
+            result["description"] += "；大额解禁压力"
+            result["action"] = "规避"
+            result["confidence"] = max(result["confidence"] - 10, 0)
+    except Exception:
+        pass
+    return result
+
+
 def analyze_fund_flow(code: str) -> dict:
     """大单/超大单资金流向分析（东方财富接口，可能不稳定）"""
     result = {
@@ -708,7 +1018,7 @@ def analyze_fund_flow(code: str) -> dict:
 
 
 def analyze_selection(code: str) -> dict:
-    """综合选股分析：股东数量 + 大单 + 龙虎榜 + 股权质押 + 限售解禁 + 北向资金 + 回购 + 融资融券 + 技术形态"""
+    """综合选股分析：股东数量 + 大单 + 龙虎榜 + 股权质押 + 限售解禁 + 北向资金 + 回购 + 融资融券 + 技术形态 + 趋势 + 场景"""
     holder = analyze_holder(code)
     fund = analyze_fund_flow(code)
     lhb = analyze_lhb(code)
@@ -719,6 +1029,10 @@ def analyze_selection(code: str) -> dict:
     margin = analyze_margin(code)
     # 技术形态
     tech = analyze_technical(code)
+    # 趋势分析
+    fund_trend = analyze_fund_flow_trend(code)
+    holder_trend = analyze_holder_trend(code)
+    north_trend = analyze_north_flow_trend(code)
 
     summary = {
         "code": code,
@@ -730,6 +1044,9 @@ def analyze_selection(code: str) -> dict:
         "north_flow": north,
         "margin": margin,
         "tech": tech,
+        "fund_trend": fund_trend,
+        "holder_trend": holder_trend,
+        "north_trend": north_trend,
         "score": 0.0,
         "signals": [],
     }
@@ -743,6 +1060,14 @@ def analyze_selection(code: str) -> dict:
         elif chg > 0:
             summary["score"] -= 0.2
             summary["signals"].append(f"股东增加 {int(chg)} 户 (筹码分散)")
+
+    # 1.5 股东趋势
+    if holder_trend.get("trend") == "股东持续减少":
+        summary["score"] += 0.2
+        summary["signals"].append(f"股东趋势: {holder_trend['trend']} {holder_trend.get('consecutive_periods',0)}期")
+    elif holder_trend.get("trend") == "股东持续增加":
+        summary["score"] -= 0.1
+        summary["signals"].append(f"股东趋势: {holder_trend['trend']} {holder_trend.get('consecutive_periods',0)}期")
 
     # 2. 大单/超大单净流入
     big = fund.get("big_net_inflow") or 0
@@ -761,6 +1086,14 @@ def analyze_selection(code: str) -> dict:
     if fund.get("super_big_ratio") is not None and fund["super_big_ratio"] > 5:
         summary["score"] += 0.2
         summary["signals"].append(f"超大单占比 {fund['super_big_ratio']:.1f}%")
+
+    # 2.5 资金趋势
+    if fund_trend.get("trend") == "资金持续流入":
+        summary["score"] += 0.3
+        summary["signals"].append(f"资金趋势: {fund_trend['trend']} {fund_trend.get('consecutive_days',0)}日")
+    elif fund_trend.get("trend") == "资金持续流出":
+        summary["score"] -= 0.3
+        summary["signals"].append(f"资金趋势: {fund_trend['trend']} {fund_trend.get('consecutive_days',0)}日")
 
     # 3. 龙虎榜：机构净额为正 -> 机构介入 -> 利好
     if lhb.get("lhb_times") is not None:
@@ -800,6 +1133,14 @@ def analyze_selection(code: str) -> dict:
             summary["score"] -= 0.15
             summary["signals"].append(f"北向减持 {abs(chg)/10000:.0f} 万股")
 
+    # 6.5 北向资金趋势
+    if north_trend.get("trend") == "北向持续增持":
+        summary["score"] += 0.2
+        summary["signals"].append(f"北向趋势: {north_trend['trend']} {north_trend.get('consecutive_days',0)}日")
+    elif north_trend.get("trend") == "北向持续减持":
+        summary["score"] -= 0.15
+        summary["signals"].append(f"北向趋势: {north_trend['trend']} {north_trend.get('consecutive_days',0)}日")
+
     # 7. 技术形态
     pattern = tech.get("pattern", "")
     if pattern == "上升通道":
@@ -811,6 +1152,26 @@ def analyze_selection(code: str) -> dict:
     elif pattern == "横盘震荡":
         summary["signals"].append(f"横盘震荡 ({tech.get('reason', '')[:20]})")
 
+    # 7.5 均线排列
+    ma = tech.get("ma_alignment", {})
+    if ma.get("alignment") == "多头排列":
+        summary["score"] += 0.2
+        summary["signals"].append(f"均线多头排列")
+    elif ma.get("alignment") == "空头排列":
+        summary["score"] -= 0.2
+        summary["signals"].append(f"均线空头排列")
+    elif ma.get("alignment") == "均线粘合":
+        summary["signals"].append(f"均线粘合-变盘在即")
+
+    # 7.6 双底双顶
+    double = tech.get("double_pattern", {})
+    if double.get("pattern") == "W底" and double.get("confirmation"):
+        summary["score"] += 0.3
+        summary["signals"].append(f"W底确认 目标{double.get('target',0):.2f}")
+    elif double.get("pattern") == "M头" and double.get("confirmation"):
+        summary["score"] -= 0.3
+        summary["signals"].append(f"M头确认 目标{double.get('target',0):.2f}")
+
     # 8. 突破新高
     breakout = tech.get("breakout", "")
     if breakout == "突破新高":
@@ -820,11 +1181,16 @@ def analyze_selection(code: str) -> dict:
         summary["score"] -= 0.3
         summary["signals"].append(f"跌破新低 强度{tech.get('strength', 0):.0f}%")
 
+    # 9. 综合场景判断
+    scenario = classify_scenario(summary)
+    summary["scenario"] = scenario
+    summary["signals"].append(f"场景: {scenario.get('scenario', '未知')} ({scenario.get('action', '观望')})")
+
     return summary
 
 
 def analyze_technical(code: str) -> dict:
-    """技术形态识别：通道分类 + 突破/跌破 + 低波动原因"""
+    """技术形态识别：通道分类 + 突破/跌破 + 低波动原因 + 均线排列 + 双底双顶 + 支撑阻力"""
     result = {"pattern": "数据不足", "breakout": "无", "low_vol_reason": "", "updated_at": ""}
     try:
         end = dt.datetime.today().strftime("%Y-%m-%d")
@@ -852,6 +1218,15 @@ def analyze_technical(code: str) -> dict:
         vol_reason = analyze_volatility_reason(df)
         if vol_reason.get("is_low_vol"):
             result["low_vol_reason"] = "; ".join(vol_reason.get("reasons", []))
+        # 均线排列
+        ma = analyze_ma_alignment(df)
+        result["ma_alignment"] = ma
+        # 双底双顶
+        double = analyze_pattern_double(df)
+        result["double_pattern"] = double
+        # 支撑阻力
+        sr = analyze_support_resistance(df)
+        result["support_resistance"] = sr
     except Exception:
         pass
     return result

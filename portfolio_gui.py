@@ -562,7 +562,7 @@ class SelectionPanel(ttk.Frame):
 
         columns = ("code", "name", "holder_now", "holder_chg", "big_inflow", "super_big",
                    "lhb_times", "lhb_net", "pledge_risk", "release_ratio", "north_chg",
-                   "tech_pattern", "score", "signals")
+                   "tech_pattern", "fund_trend", "north_trend", "scenario", "score", "signals")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings",
                                  yscrollcommand=scrollbar.set, height=18)
         self.tree.heading("code", text="代码")
@@ -577,16 +577,22 @@ class SelectionPanel(ttk.Frame):
         self.tree.heading("release_ratio", text="解禁占比%")
         self.tree.heading("north_chg", text="北向变化")
         self.tree.heading("tech_pattern", text="技术形态")
+        self.tree.heading("fund_trend", text="资金趋势")
+        self.tree.heading("north_trend", text="北向趋势")
+        self.tree.heading("scenario", text="综合场景")
         self.tree.heading("score", text="评分")
         self.tree.heading("signals", text="信号")
         for col in columns:
-            self.tree.column(col, width=78, anchor=tk.CENTER)
+            self.tree.column(col, width=72, anchor=tk.CENTER)
         self.tree.column("code", width=100)
         self.tree.column("name", width=120)
         self.tree.column("signals", width=220, anchor=tk.W)
         self.tree.column("lhb_net", width=90)
         self.tree.column("north_chg", width=90)
-        self.tree.column("tech_pattern", width=100)
+        self.tree.column("tech_pattern", width=90)
+        self.tree.column("fund_trend", width=100)
+        self.tree.column("north_trend", width=100)
+        self.tree.column("scenario", width=100)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.tree.yview)
 
@@ -627,6 +633,9 @@ class SelectionPanel(ttk.Frame):
             release = row.get("release", {})
             north = row.get("north_flow", {})
             tech = row.get("tech", {})
+            fund_trend = row.get("fund_trend", {})
+            north_trend = row.get("north_trend", {})
+            scenario = row.get("scenario", {})
             score = row.get("score", 0)
             signals = "; ".join(row.get("signals", []))
 
@@ -651,6 +660,9 @@ class SelectionPanel(ttk.Frame):
             if north_chg != "--":
                 north_chg = f"{north_chg/10000:.0f}万"
             tech_pattern = tech.get("pattern") or "--"
+            fund_trend_text = fund_trend.get("trend") or "--"
+            north_trend_text = north_trend.get("trend") or "--"
+            scenario_text = scenario.get("scenario") or "--"
 
             tag = "positive" if score > 0.5 else "negative" if score < 0 else "neutral"
 
@@ -660,6 +672,7 @@ class SelectionPanel(ttk.Frame):
                 lhb_times, lhb_net,
                 pledge_risk, release_ratio, north_chg,
                 tech_pattern,
+                fund_trend_text, north_trend_text, scenario_text,
                 f"{score:.2f}", signals
             ), tags=(tag,))
 
@@ -671,8 +684,8 @@ class SelectionPanel(ttk.Frame):
         path = os.path.join(self.report_dir, "portfolio_selection.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write("# 选股分析报告\n\n")
-            f.write("| 代码 | 名称 | 股东数 | 股东变化 | 大单 | 超大单 | 龙虎榜 | 机构净额 | 质押风险 | 解禁占比 | 北向变化 | 技术形态 | 评分 | 信号 |\n")
-            f.write("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+            f.write("| 代码 | 名称 | 股东数 | 股东变化 | 大单 | 超大单 | 龙虎榜 | 机构净额 | 质押风险 | 解禁占比 | 北向变化 | 技术形态 | 资金趋势 | 北向趋势 | 综合场景 | 评分 | 信号 |\n")
+            f.write("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
             for item in self.tree.get_children():
                 vals = self.tree.item(item)["values"]
                 f.write(f"| {'| '.join(str(v) for v in vals)} |\n")
