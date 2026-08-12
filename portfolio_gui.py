@@ -97,8 +97,12 @@ class PoolPanel(ttk.Frame):
         input_frame = ttk.Frame(self)
         input_frame.pack(fill=tk.X, padx=10, pady=5)
         ttk.Label(input_frame, text="添加股票:").pack(side=tk.LEFT, padx=5)
-        self.entry = ttk.Entry(input_frame, width=20)
+        self.entry = ttk.Entry(input_frame, width=30)
         self.entry.pack(side=tk.LEFT, padx=5)
+        self.entry.insert(0, "支持: 600519 / 茅台 / gmt / 比亚迪")
+        self.entry.config(foreground=COLORS.get("text_secondary", "#888888"))
+        self.entry.bind("<FocusIn>", lambda e: self._on_entry_focus_in())
+        self.entry.bind("<FocusOut>", lambda e: self._on_entry_focus_out())
         self.entry.bind("<Return>", lambda e: self.add_stock())
         ttk.Button(input_frame, text="添加", command=self.add_stock).pack(side=tk.LEFT, padx=5)
         ttk.Button(input_frame, text="从文件导入", command=self.import_from_file).pack(side=tk.LEFT, padx=5)
@@ -138,6 +142,16 @@ class PoolPanel(ttk.Frame):
             name = fetch_name(code)
             self.tree.insert("", tk.END, values=(code, name))
 
+    def _on_entry_focus_in(self):
+        if self.entry.get().startswith("支持:"):
+            self.entry.delete(0, tk.END)
+            self.entry.config(foreground=COLORS.get("text", "#000000"))
+
+    def _on_entry_focus_out(self):
+        if not self.entry.get().strip():
+            self.entry.insert(0, "支持: 600519 / 茅台 / gmt / 比亚迪")
+            self.entry.config(foreground=COLORS.get("text_secondary", "#888888"))
+
     def add_stock(self):
         text = self.entry.get().strip()
         if not text:
@@ -170,11 +184,12 @@ class PoolPanel(ttk.Frame):
                 else:
                     selected = self._pick_from_suggestions(hits)
                     if selected:
-                        if selected not in self.pool_list:
-                            self.pool_list.append(selected)
-                            added.append(selected)
-                        else:
-                            skipped.append(selected)
+                        for sel in (selected if isinstance(selected, list) else [selected]):
+                            if sel not in self.pool_list:
+                                self.pool_list.append(sel)
+                                added.append(sel)
+                            else:
+                                skipped.append(sel)
         self.entry.delete(0, tk.END)
         self.refresh_list()
         self.on_change()
@@ -193,18 +208,24 @@ class PoolPanel(ttk.Frame):
         top.grab_set()
 
         ttk.Label(top, text="找到多只候选，请点击选择：").pack(pady=5)
-        listbox = tk.Listbox(top, font=("Microsoft YaHei", 10))
+        listbox = tk.Listbox(top, font=("Microsoft YaHei", 10), selectmode=tk.EXTENDED)
         listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         for h in hits:
             listbox.insert(tk.END, f"{h['code']}  {h['name']}")
 
-        def on_select(_):
-            sel = listbox.curselection()
-            if sel:
-                pick["value"] = hits[sel[0]]["code"]
+        def on_confirm():
+            sels = listbox.curselection()
+            pick["value"] = [hits[i]["code"] for i in sels] if sels else None
             top.destroy()
 
-        ttk.Button(top, text="确定", command=on_select).pack(pady=5)
+        def on_double(_):
+            on_confirm()
+
+        listbox.bind("<Double-Button-1>", on_double)
+        ttk.Button(top, text="确定", command=on_confirm).pack(pady=5)
+        ttk.Label(top, text="提示: Ctrl/Shift 可多选，双击快速确认",
+                  foreground=COLORS.get("text_secondary", "#888888"),
+                  font=("Microsoft YaHei", 8)).pack(pady=(0, 5))
         self.winfo_toplevel().wait_window(top)
         return pick["value"]
 

@@ -2076,14 +2076,40 @@ COLORS_PRICE = ["#2196F3", "#FF9800", "#4CAF50", "#F44336", "#9C27B0", "#FFEB3B"
 _STOCK_INDEX: pd.DataFrame | None = None
 
 
+def _to_py_init(name: str) -> str:
+    """中文名转拼音首字母缩写"""
+    table = {
+        '安':'A','北':'B','长':'C','重':'C','东':'D','大':'D','福':'F','广':'G','贵':'G','海':'H',
+        '华':'H','河':'H','杭':'H','合':'H','江':'J','金':'J','嘉':'J','建':'J','京':'J','科':'K',
+        '泸':'L','临':'L','鲁':'L','南':'N','宁':'N','内':'N','盘':'P','平':'P','青':'Q','人':'R',
+        '山':'S','深':'S','四':'S','天':'T','太':'T','万':'W','五':'W','西':'X','新':'X','厦':'X',
+        '盐':'Y','云':'Y','珠':'Z','中':'Z','郑':'Z','浙':'Z','鹏':'P','能':'N','阳':'Y','藏':'Z',
+        '吉':'J','冀':'J','晋':'J','辽':'L','苏':'S','皖':'W','赣':'G','鄂':'E','湘':'X','豫':'Y',
+        '粤':'Y','桂':'G','琼':'Q','渝':'Y','川':'C','黔':'Q','滇':'D','陕':'S','甘':'G','蒙':'M',
+        '百':'B','宝':'B','滨':'B','包':'B','沧':'C','常':'C','承':'C','赤':'C','滁':'C','丹':'D',
+        '德':'D','迪':'D','都':'D','佛':'F','抚':'F','哈':'H','衡':'H','呼':'H','淮':'H','锦':'J',
+        '九':'J','巨':'J','开':'K','昆':'K','拉':'L','莱':'L','兰':'L','乐':'L','洛':'L','马':'M',
+        '茂':'M','梅':'M','绵':'M','牡':'M','秦':'Q','曲':'Q','泉':'Q','日':'R','瑞':'S','三':'S',
+        '盛':'S','石':'S','首':'S','松':'S','泰':'T','唐':'T','通':'T','潍':'W','温':'W','乌':'W',
+        '芜':'W','武':'W','锡':'X','咸':'X','香':'X','襄':'X','欣':'X','信':'X','兴':'X','徐':'X',
+        '烟':'Y','延':'Y','扬':'Y','姚':'Y','宜':'Y','银':'Y','营':'Y','榆':'Y','宇':'Y','玉':'Y',
+        '元':'Y','张':'Z','漳':'Z','重':'Z','周':'Z','诸':'Z','淄':'Z','自':'Z','遵':'Z','作':'Z',
+        '州':'Z','茅':'M','台':'T','粮':'L','液':'Y','比':'B','亚':'Y','迪':'D','时':'S',
+        '代':'D','券':'Q','证':'Q','电':'D','钢':'G','券':'Q',
+    }
+    return ''.join(table.get(c, '?') for c in name)
+
+
 def _ensure_stock_index() -> pd.DataFrame:
     """懒加载全 A 股代码名称索引"""
     global _STOCK_INDEX
     if _STOCK_INDEX is None:
         try:
             _STOCK_INDEX = ak.stock_info_a_code_name()
+            if not _STOCK_INDEX.empty and "name" in _STOCK_INDEX.columns:
+                _STOCK_INDEX["py_init"] = _STOCK_INDEX["name"].str.replace(" ", "").apply(_to_py_init)
         except Exception:
-            _STOCK_INDEX = pd.DataFrame(columns=["code", "name"])
+            _STOCK_INDEX = pd.DataFrame(columns=["code", "name", "py_init"])
     return _STOCK_INDEX
 
 
@@ -2092,6 +2118,7 @@ def search_stocks(query: str, limit: int = 10) -> list[dict]:
     模糊搜索股票，支持：
     - 代码前缀/完整代码：输入 600 可匹配 600519...
     - 中文名称包含：输入 茅台 可匹配贵州茅台
+    - 拼音首字母：输入 gmt 可匹配贵州茅台，byd 可匹配比亚迪
     - 不区分大小写
     返回 [{"code": "600519", "name": "贵州茅台"}, ...]
     """
@@ -2103,9 +2130,17 @@ def search_stocks(query: str, limit: int = 10) -> list[dict]:
         return []
     q_lower = q.lower()
     try:
+        py_mask = pd.Series(False, index=df.index)
+        if "py_init" in df.columns and q_lower.isalpha() and len(q_lower) <= 5:
+            # 拼音首字母支持非连续缩写，如 gmt 匹配 GZMT
+            fuzzy = ".*".join(re.escape(c) for c in q_lower)
+            py_mask = df["py_init"].str.contains(fuzzy, case=False, na=False, regex=True)
+        elif "py_init" in df.columns:
+            py_mask = df["py_init"].str.contains(re.escape(q_lower), case=False, na=False)
         mask = (
             df["code"].str.startswith(q)
             | df["name"].str.contains(re.escape(q), case=False, na=False)
+            | py_mask
         )
         hits = df[mask].head(limit)
         return [{"code": str(r.code), "name": str(r.name)} for r in hits.itertuples(index=False)]
