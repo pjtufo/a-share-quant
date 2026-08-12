@@ -90,36 +90,70 @@ def _is_hk(code: str) -> bool:
     return False
 
 
+def _market_type(code: str) -> str:
+    """返回市场类型: sh/sz/bj/hk/us/jp/kr/tw/eu/unknown"""
+    if "." in code:
+        return code.split(".")[0].lower()
+    lower = code.lower()
+    if lower.startswith("hk"):
+        return "hk"
+    if lower.startswith("us"):
+        return "us"
+    if lower.startswith("jp"):
+        return "jp"
+    if lower.startswith("kr"):
+        return "kr"
+    if lower.startswith("tw"):
+        return "tw"
+    if lower.startswith("eu"):
+        return "eu"
+    c = _clean_code(code)
+    if len(c) == 5 and c.isdigit():
+        return "hk"
+    if c.startswith(("6", "9")):
+        return "sh"
+    if c.startswith(("0", "3", "2")):
+        return "sz"
+    if c.startswith(("8", "4", "920", "830")):
+        return "bj"
+    return "unknown"
+
+
 def _clean_code(code: str) -> str:
     if "." in code:
         return code.split(".", 1)[1]
-    if code.startswith("hk"):
+    prefixes = ("hk", "us", "US", "jp", "JP", "kr", "KR", "tw", "TW", "eu", "EU")
+    if code.startswith(prefixes):
         return code[2:]
     return code
 
 
 def _exchange(code: str) -> str:
-    if "." in code:
-        return code.split(".")[0].lower()
-    c = _clean_code(code)
-    if c.startswith(("6", "9")):
-        return "sh"
-    return "sz"
+    mkt = _market_type(code)
+    if mkt in ("sh", "sz", "bj", "hk"):
+        return mkt
+    return mkt
 
 
 def fetch_name(code: str) -> str:
-    """获取股票中文名称（腾讯qt接口）"""
+    """获取股票名称（腾讯qt接口，支持 A股/港股/美股/日股/韩股）"""
     clean = _clean_code(code)
-    is_hk = _is_hk(code)
+    mkt = _market_type(code)
     try:
-        if is_hk:
+        if mkt == "hk":
             url = f"https://qt.gtimg.cn/q=hk{clean}"
+        elif mkt == "us":
+            url = f"https://qt.gtimg.cn/q=us{clean}"
+        elif mkt == "jp":
+            url = f"https://qt.gtimg.cn/q=jp{clean}"
+        elif mkt == "kr":
+            url = f"https://qt.gtimg.cn/q=kr{clean}"
         else:
             ex = _exchange(code)
             url = f"https://qt.gtimg.cn/q={ex}{clean}"
         resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
         text = resp.text
-        match = re.search(r'v_(?:sh|sz|hk)(\d+)="[^~]*~([^~]+)~', text)
+        match = re.search(r'v_(?:sh|sz|hk|us|jp|kr)([^=]*)="[^~]*~([^~]+)~', text)
         if match:
             return match.group(2)
     except Exception:
@@ -128,97 +162,152 @@ def fetch_name(code: str) -> str:
 
 
 def fetch_price(code: str, start: str, end: str, log_callback=None) -> pd.DataFrame:
-    """获取日线数据"""
+    """获取日线数据（支持 A股/港股/美股，日股/韩股/台湾股/欧股暂返回空）"""
     import akshare as ak
     clean = _clean_code(code)
-    is_hk = _is_hk(code)
+    mkt = _market_type(code)
 
-    if is_hk:
-        for attempt in range(3):
-            try:
-                df = ak.stock_hk_hist(symbol=clean, period="daily",
-                                       start_date=start.replace("-", ""),
-                                       end_date=end.replace("-", ""),
-                                       adjust="qfq")
-                if df is not None and not df.empty:
-                    df.rename(columns={"日期": "date", "开盘": "open", "收盘": "close",
-                                       "最高": "high", "最低": "low", "成交量": "volume"}, inplace=True)
-                    df["date"] = pd.to_datetime(df["date"])
-                    df.sort_values("date", inplace=True)
-                    df.reset_index(drop=True, inplace=True)
+    if mkt == "hk":
+        symbol = f"hk{clean}"
+        chunks = []
+        cur = dt.datetime.strptime(start, "%Y-%m-%d")
+        end_dt = dt.datetime.strptime(end, "%Y-%m-%d")
+        while cur <= end_dt:
+            nxt = min(dt.datetime(cur.year + 1, 1, 1), end_dt + dt.timedelta(days=1))
+            beg = cur.strftime("%Y-%m-%d")
+            ed = (nxt - dt.timedelta(days=1)).strftime("%Y-%m-%d")
+            for attempt in range(3):
+                try:
+                    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+                           f"?param={symbol},day,{beg},{ed},1000,qfq")
+                    t0 = time.time()
+                    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+                                      timeout=15)
+                    dt_ms = int((time.time() - t0) * 1000)
+                    r.raise_for_status()
+                    jd = r.json()
+                    data = jd.get("data")
+                    if isinstance(data, dict):
+                        inner = data.get(symbol, {})
+                        klines = inner.get("qfqday") or inner.get("day") or [] if isinstance(inner, dict) else []
+                    elif isinstance(data, list):
+                        klines = data
+                    else:
+                        klines = []
+                    chunks.extend(klines)
+                    size_kb = len(r.content) // 1024
                     if log_callback:
-                        log_callback(f"[完成] {code} | {start}~{end} | 港股 | {len(df)} bars")
-                    return df
-            except Exception as e:
-                if log_callback:
-                    log_callback(f"[失败] {code} | {start}~{end} | 港股 | {str(e)[:40]}")
-                if attempt < 2:
-                    time.sleep(2)
+                        log_callback(f"[下载] {code} | {beg}~{ed} | {len(klines)} bars | {size_kb}KB | {dt_ms}ms | 200")
+                    break
+                except Exception as e:
+                    dt_ms = int((time.time() - t0) * 1000) if "t0" in dir() else 0
+                    if log_callback:
+                        log_callback(f"[失败] {code} | {beg}~{ed} | {str(e)} | {dt_ms}ms")
+                    if attempt < 2:
+                        time.sleep(2)
+            cur = nxt
+
+        seen = set()
+        rows = []
+        for k in chunks:
+            ds = k[0]
+            if ds in seen:
+                continue
+            seen.add(ds)
+            rows.append({"date": pd.to_datetime(ds), "open": float(k[1]), "close": float(k[2]),
+                          "high": float(k[3]), "low": float(k[4]), "volume": float(k[5])})
+        if not rows:
+            if log_callback:
+                log_callback(f"[跳过] {code} | {start}~{end} | 港股无数据")
+            return pd.DataFrame()
         if log_callback:
-            log_callback(f"[跳过] {code} | {start}~{end} | 数据不足")
+            log_callback(f"[完成] {code} | {start}~{end} | 港股 | {len(rows)} bars")
+        return pd.DataFrame(rows)
+
+
+    if mkt == "us":
+        try:
+            df = ak.stock_us_daily(symbol=clean, adjust="qfq")
+            if df is not None and not df.empty:
+                df["date"] = pd.to_datetime(df["date"])
+                df.sort_values("date", inplace=True)
+                df.reset_index(drop=True, inplace=True)
+                mask = (df["date"] >= start) & (df["date"] <= end)
+                df = df.loc[mask]
+                if log_callback:
+                    log_callback(f"[完成] {code} | {start}~{end} | 美股 | {len(df)} bars")
+                return df
+        except Exception as e:
+            if log_callback:
+                log_callback(f"[失败] {code} | {start}~{end} | 美股 | {str(e)}")
+        if log_callback:
+            log_callback(f"[跳过] {code} | {start}~{end} | 美股数据不足")
         return pd.DataFrame()
 
-    ex = _exchange(code)
-    symbol = f"{ex}{clean}"
-    chunks = []
-    cur = dt.datetime.strptime(start, "%Y-%m-%d")
-    end_dt = dt.datetime.strptime(end, "%Y-%m-%d")
-    while cur <= end_dt:
-        nxt = min(dt.datetime(cur.year + 1, 1, 1), end_dt + dt.timedelta(days=1))
-        beg = cur.strftime("%Y-%m-%d")
-        ed = (nxt - dt.timedelta(days=1)).strftime("%Y-%m-%d")
-        for attempt in range(3):
-            try:
-                url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-                       f"?param={symbol},day,{beg},{ed},1000,qfq")
-                t0 = time.time()
-                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
-                                  timeout=15)
-                dt_ms = int((time.time() - t0) * 1000)
-                r.raise_for_status()
-                jd = r.json()
-                data = jd.get("data")
-                if isinstance(data, dict):
-                    inner = data.get(symbol, {})
-                    klines = inner.get("qfqday") or inner.get("day") or [] if isinstance(inner, dict) else []
-                elif isinstance(data, list):
-                    klines = data
-                else:
-                    klines = []
-                chunks.extend(klines)
-                size_kb = len(r.content) // 1024
-                if log_callback:
-                    log_callback(f"[下载] {code} | {beg}~{ed} | {len(klines)} bars | {size_kb}KB | {dt_ms}ms | 200")
-                break
-            except Exception as e:
-                dt_ms = int((time.time() - t0) * 1000) if 't0' in dir() else 0
-                if log_callback:
-                    log_callback(f"[失败] {code} | {beg}~{ed} | {str(e)[:40]} | {dt_ms}ms")
-                if attempt < 2:
-                    time.sleep(2)
-        cur = nxt
+    if mkt in ("sh", "sz", "bj"):
+        ex = mkt
+        symbol = f"{ex}{clean}"
+        chunks = []
+        cur = dt.datetime.strptime(start, "%Y-%m-%d")
+        end_dt = dt.datetime.strptime(end, "%Y-%m-%d")
+        while cur <= end_dt:
+            nxt = min(dt.datetime(cur.year + 1, 1, 1), end_dt + dt.timedelta(days=1))
+            beg = cur.strftime("%Y-%m-%d")
+            ed = (nxt - dt.timedelta(days=1)).strftime("%Y-%m-%d")
+            for attempt in range(3):
+                try:
+                    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+                           f"?param={symbol},day,{beg},{ed},1000,qfq")
+                    t0 = time.time()
+                    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+                                      timeout=15)
+                    dt_ms = int((time.time() - t0) * 1000)
+                    r.raise_for_status()
+                    jd = r.json()
+                    data = jd.get("data")
+                    if isinstance(data, dict):
+                        inner = data.get(symbol, {})
+                        klines = inner.get("qfqday") or inner.get("day") or [] if isinstance(inner, dict) else []
+                    elif isinstance(data, list):
+                        klines = data
+                    else:
+                        klines = []
+                    chunks.extend(klines)
+                    size_kb = len(r.content) // 1024
+                    if log_callback:
+                        log_callback(f"[下载] {code} | {beg}~{ed} | {len(klines)} bars | {size_kb}KB | {dt_ms}ms | 200")
+                    break
+                except Exception as e:
+                    dt_ms = int((time.time() - t0) * 1000) if "t0" in dir() else 0
+                    if log_callback:
+                        log_callback(f"[失败] {code} | {beg}~{ed} | {str(e)} | {dt_ms}ms")
+                    if attempt < 2:
+                        time.sleep(2)
+            cur = nxt
 
-    seen = set()
-    rows = []
-    for k in chunks:
-        ds = k[0]
-        if ds in seen:
-            continue
-        seen.add(ds)
-        rows.append({"date": pd.to_datetime(ds), "open": float(k[1]), "close": float(k[2]),
-                      "high": float(k[3]), "low": float(k[4]), "volume": float(k[5])})
-    if not rows:
+        seen = set()
+        rows = []
+        for k in chunks:
+            ds = k[0]
+            if ds in seen:
+                continue
+            seen.add(ds)
+            rows.append({"date": pd.to_datetime(ds), "open": float(k[1]), "close": float(k[2]),
+                          "high": float(k[3]), "low": float(k[4]), "volume": float(k[5])})
+        if not rows:
+            if log_callback:
+                log_callback(f"[跳过] {code} | {start}~{end} | 无数据")
+            return pd.DataFrame()
         if log_callback:
-            log_callback(f"[跳过] {code} | {start}~{end} | 无数据")
-        return pd.DataFrame()
+            log_callback(f"[完成] {code} | {start}~{end} | {len(rows)} bars")
+        return pd.DataFrame(rows)
+
+    mkt_names = {"jp": "日股", "kr": "韩股", "tw": "台湾股", "eu": "欧股"}
+    mkt_name = mkt_names.get(mkt, mkt)
     if log_callback:
-        log_callback(f"[完成] {code} | {start}~{end} | {len(rows)} bars")
-    return pd.DataFrame(rows)
+        log_callback(f"[跳过] {code} | {start}~{end} | {mkt_name}暂不支持")
+    return pd.DataFrame()
 
-
-# ──────────────────────────────────────────────────────────────
-# 宏观数据层
-# ──────────────────────────────────────────────────────────────
 def fetch_macro(start: str, end: str) -> dict[str, pd.DataFrame]:
     """获取宏观指标（akshare）"""
     results = {}
@@ -568,6 +657,110 @@ def analyze_margin(code: str) -> dict:
     except Exception:
         pass
     return result
+
+
+
+
+def _price_cache_path(code):
+    clean = _clean_code(code)
+    mkt = _market_type(code)
+    return os.path.join(PRICE_CACHE_DIR, f"{mkt}_{clean}.csv")
+
+
+def get_cached_price(code, max_age_days=7):
+    """读取本地缓存的日线数据"""
+    p = _price_cache_path(code)
+    if not os.path.exists(p):
+        return None
+    try:
+        df = pd.read_csv(p, encoding="utf-8-sig")
+        if df.empty:
+            return None
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"])
+        mtime = dt.datetime.fromtimestamp(os.path.getmtime(p))
+        if dt.datetime.now() - mtime > dt.timedelta(days=max_age_days):
+            return None
+        return df
+    except Exception:
+        return None
+
+
+def set_cached_price(code, df):
+    """将日线数据写入本地缓存"""
+    p = _price_cache_path(code)
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        out = df.copy()
+        if "date" in out.columns:
+            out["date"] = pd.to_datetime(out["date"]).dt.strftime("%Y-%m-%d")
+        out.to_csv(p, index=False, encoding="utf-8-sig")
+    except Exception:
+        pass
+
+
+def is_price_cache_stale(code, max_age_days=7):
+    """检查个股数据缓存是否过期"""
+    return get_cached_price(code, max_age_days) is None
+
+
+def refresh_price_cache(code, start=None, end=None, update_mode="scheduled"):
+    """
+    个股数据三级更新策略:
+    - scheduled: 定时更新（默认7天），增量补全
+    - on_demand: 即时更新（强制重拉全量）
+    - triggered: 触发更新（检测到数据不足时自动补全）
+    """
+    cached = get_cached_price(code, max_age_days=7)
+
+    if update_mode == "on_demand" or cached is None:
+        end_dt = dt.datetime.now()
+        start_dt = end_dt - dt.timedelta(days=730)
+        s = start or start_dt.strftime("%Y-%m-%d")
+        e = end or end_dt.strftime("%Y-%m-%d")
+        df = fetch_price(code, s, e)
+        if not df.empty:
+            set_cached_price(code, df)
+        return df
+
+    # scheduled / triggered: incremental update
+    end_dt = dt.datetime.now()
+    s = start or (end_dt - dt.timedelta(days=30)).strftime("%Y-%m-%d")
+    e = end or end_dt.strftime("%Y-%m-%d")
+    recent = fetch_price(code, s, e)
+    if not recent.empty:
+        cached = pd.concat([cached, recent], ignore_index=True)
+        cached.drop_duplicates(subset=["date"], keep="last", inplace=True)
+        cached.sort_values("date", inplace=True)
+        cached.reset_index(drop=True, inplace=True)
+        set_cached_price(code, cached)
+        return cached
+    return cached
+
+
+def _online_stock_lookup(query, limit=10):
+    """在线兜底查询"""
+    hits = []
+    q = query.strip().lower()
+    if q.isdigit() or (len(q) <= 8 and any(q.startswith(p) for p in ["sh","sz","bj","hk","us","jp","kr","tw","eu"])):
+        mkt = _market_type(q)
+        clean = _clean_code(q)
+        name = fetch_name(q)
+        if name and name != q:
+            hits.append({"code": clean, "name": name, "market": mkt})
+    if not hits and q.isalpha() and len(q) <= 5:
+        common = {
+            "gzm": "贵州茅台", "gmt": "贵州茅台", "wly": "五粮液", "wl": "五粮液",
+            "byd": "比亚迪", "nd": "宁德时代", "nsds": "宁德时代",
+            "yh": "洋河股份", "gz": "贵州茅台",
+        }
+        for py, name in common.items():
+            if q in py or py.startswith(q):
+                hits.append({"code": "", "name": name, "market": "unknown"})
+                if len(hits) >= limit:
+                    break
+    return hits[:limit]
+
 
 
 def classify_channel(df: pd.DataFrame) -> dict:
@@ -2072,6 +2265,12 @@ def plot_diagnosis_charts(code: str, df: pd.DataFrame, holders_df: pd.DataFrame,
 
 COLORS_PRICE = ["#2196F3", "#FF9800", "#4CAF50", "#F44336", "#9C27B0", "#FFEB3B"]
 
+# 缓存配置
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "cache")
+INDEX_CACHE = os.path.join(CACHE_DIR, "stock_index.csv")
+PRICE_CACHE_DIR = os.path.join(CACHE_DIR, "prices")
+_STOCK_INDEX_MTIME = None
+
 # 股票搜索索引（懒加载）
 _STOCK_INDEX: pd.DataFrame | None = None
 
@@ -2101,51 +2300,85 @@ def _to_py_init(name: str) -> str:
 
 
 def _ensure_stock_index() -> pd.DataFrame:
-    """懒加载全 A 股代码名称索引"""
-    global _STOCK_INDEX
-    if _STOCK_INDEX is None:
+    """懒加载全市场股票代码名称索引（优先本地缓存，每日自动刷新）"""
+    global _STOCK_INDEX, _STOCK_INDEX_MTIME
+    now = dt.datetime.now()
+
+    def _index_needs_refresh(df):
+        if df is None or df.empty:
+            return True
+        if not os.path.exists(INDEX_CACHE):
+            return True
+        mtime = dt.datetime.fromtimestamp(os.path.getmtime(INDEX_CACHE))
+        return mtime.date() < now.date()
+
+    if _STOCK_INDEX is None or _index_needs_refresh(_STOCK_INDEX):
+        # Try local cache first
+        if os.path.exists(INDEX_CACHE):
+            try:
+                _STOCK_INDEX = pd.read_csv(INDEX_CACHE, encoding="utf-8-sig")
+                if "py_init" not in _STOCK_INDEX.columns and "name" in _STOCK_INDEX.columns:
+                    _STOCK_INDEX["py_init"] = _STOCK_INDEX["name"].str.replace(" ", "").apply(_to_py_init)
+                if "market" not in _STOCK_INDEX.columns and "code" in _STOCK_INDEX.columns:
+                    _STOCK_INDEX["market"] = _STOCK_INDEX["code"].apply(_market_type)
+                mtime = dt.datetime.fromtimestamp(os.path.getmtime(INDEX_CACHE))
+                if mtime.date() >= now.date():
+                    return _STOCK_INDEX  # already updated today
+            except Exception:
+                _STOCK_INDEX = None
+        # Fetch from online
         try:
-            _STOCK_INDEX = ak.stock_info_a_code_name()
-            if not _STOCK_INDEX.empty and "name" in _STOCK_INDEX.columns:
-                _STOCK_INDEX["py_init"] = _STOCK_INDEX["name"].str.replace(" ", "").apply(_to_py_init)
+            import akshare as ak
+            df = ak.stock_info_a_code_name()
+            if not df.empty:
+                if "name" in df.columns:
+                    df["py_init"] = df["name"].str.replace(" ", "").apply(_to_py_init)
+                if "market" not in df.columns:
+                    df["market"] = df["code"].apply(_market_type)
+                os.makedirs(os.path.dirname(INDEX_CACHE), exist_ok=True)
+                df.to_csv(INDEX_CACHE, index=False, encoding="utf-8-sig")
+                _STOCK_INDEX = df
         except Exception:
-            _STOCK_INDEX = pd.DataFrame(columns=["code", "name", "py_init"])
+            if _STOCK_INDEX is None:
+                _STOCK_INDEX = pd.DataFrame(columns=["code", "name", "py_init", "market"])
     return _STOCK_INDEX
 
 
 def search_stocks(query: str, limit: int = 10) -> list[dict]:
-    """
-    模糊搜索股票，支持：
-    - 代码前缀/完整代码：输入 600 可匹配 600519...
-    - 中文名称包含：输入 茅台 可匹配贵州茅台
-    - 拼音首字母：输入 gmt 可匹配贵州茅台，byd 可匹配比亚迪
-    - 不区分大小写
-    返回 [{"code": "600519", "name": "贵州茅台"}, ...]
-    """
+    """模糊搜索股票（本地索引优先，兜底在线查询）。支持代码/名称/拼音首字母。"""
     q = str(query).strip()
     if not q:
         return []
     df = _ensure_stock_index()
     if df.empty:
-        return []
-    q_lower = q.lower()
+        return _online_stock_lookup(q, limit)
     try:
-        py_mask = pd.Series(False, index=df.index)
-        if "py_init" in df.columns and q_lower.isalpha() and len(q_lower) <= 5:
-            # 拼音首字母支持非连续缩写，如 gmt 匹配 GZMT
+        code_str = df["code"].astype(str).str.zfill(6)
+        name_norm = df["name"].astype(str).str.replace(" ", "", regex=False)
+        py_series = df["py_init"].astype(str) if "py_init" in df.columns else pd.Series("", index=df.index)
+        q_lower = q.lower()
+
+        mask = pd.Series(False, index=df.index)
+        if q_lower.isascii() and q_lower.isalpha() and len(q_lower) <= 6:
+            # ASCII pinyin initial match only
             fuzzy = ".*".join(re.escape(c) for c in q_lower)
-            py_mask = df["py_init"].str.contains(fuzzy, case=False, na=False, regex=True)
-        elif "py_init" in df.columns:
-            py_mask = df["py_init"].str.contains(re.escape(q_lower), case=False, na=False)
-        mask = (
-            df["code"].str.startswith(q)
-            | df["name"].str.contains(re.escape(q), case=False, na=False)
-            | py_mask
-        )
-        hits = df[mask].head(limit)
-        return [{"code": str(r.code), "name": str(r.name)} for r in hits.itertuples(index=False)]
+            mask = mask | py_series.str.contains(fuzzy, case=False, na=False, regex=True)
+        else:
+            # Digit code match or Chinese name match
+            if q.isdigit():
+                mask = mask | code_str.str.startswith(q)
+            else:
+                mask = mask | code_str.str.startswith(q)
+                mask = mask | name_norm.str.contains(re.escape(q), case=False, na=False)
+
+        hits = []
+        for _, r in df[mask].head(limit).iterrows():
+            hits.append({"code": code_str.loc[r.name], "name": str(r.name), "market": str(r.get("market", _market_type(str(r.code))))})
+        if hits:
+            return hits
     except Exception:
-        return []
+        pass
+    return _online_stock_lookup(q, limit)
 
 
 if __name__ == "__main__":
