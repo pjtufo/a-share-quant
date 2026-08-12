@@ -118,6 +118,12 @@ class PoolPanel(ttk.Frame):
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.tree.yview)
 
+        status_frame = ttk.Frame(self)
+        status_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+        self.status_label = ttk.Label(status_frame, text="", foreground=COLORS["text_secondary"],
+                                      font=("Microsoft YaHei", 9))
+        self.status_label.pack(side=tk.LEFT)
+
         btn_frame = ttk.Frame(self)
         btn_frame.pack(fill=tk.X, padx=10, pady=5)
         ttk.Button(btn_frame, text="删除选中", command=self.remove_selected).pack(side=tk.RIGHT, padx=5)
