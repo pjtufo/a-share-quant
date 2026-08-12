@@ -943,9 +943,9 @@ class DiagnosisPanel(ttk.Frame):
                     pass
                 chart_paths = plot_diagnosis_charts(code, df, holders_df, fund_df, cyq_df,
                                                     os.path.join(self.report_dir, f"diag_{_clean_code(code)}"))
-                self.root.after(0, lambda: self._show_diagnosis(code, result, basic, sector, chart_paths))
+                self.winfo_toplevel().after(0, lambda: self._show_diagnosis(code, result, basic, sector, chart_paths))
             except Exception as e:
-                self.root.after(0, lambda: self.info_label.config(
+                self.winfo_toplevel().after(0, lambda: self.info_label.config(
                     text=f"诊断失败: {str(e)[:60]}", fg=COLORS["danger"]))
 
         threading.Thread(target=_run, daemon=True).start()
