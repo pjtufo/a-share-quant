@@ -604,6 +604,9 @@ class SelectionPanel(ttk.Frame):
         self.tree.tag_configure("negative", foreground=COLORS["danger"])
         self.tree.tag_configure("neutral", foreground=COLORS["text_secondary"])
 
+    def refresh_pool(self):
+        self.refresh()
+
     def refresh(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -782,6 +785,13 @@ class DiagnosisPanel(ttk.Frame):
         # 当前诊断代码
         self._current_code = None
         self._current_chart_paths = {}
+
+    def refresh_pool(self):
+        # 刷新左侧股票池列表
+        for item in self.pool_tree.get_children():
+            self.pool_tree.delete(item)
+        for code in self.pool_list:
+            self.pool_tree.insert("", tk.END, values=(code, fetch_name(code)))
 
     def diagnose_selected(self):
         sel = self.pool_tree.selection()
@@ -1246,6 +1256,9 @@ class ScorePanel(ttk.Frame):
         else:
             self.bind("<Map>", lambda e: self.after(100, self.refresh_scores))
 
+    def refresh_pool(self):
+        self.refresh_scores()
+
     def refresh_scores(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -1383,11 +1396,11 @@ class PortfolioApp:
         self.notebook.add(self.diagnosis_panel, text="🔬 个股诊断")
 
     def _on_pool_change(self):
-        self.score_panel.pool_list = self.pool_list.copy()
-        if hasattr(self, 'selection_panel'):
-            self.selection_panel.pool_list = self.pool_list.copy()
-        if hasattr(self, 'diagnosis_panel'):
-            self.diagnosis_panel.pool_list = self.pool_list.copy()
+        # 子面板持有同一 list 引用，直接刷新 UI 即可
+        self.score_panel.refresh_pool()
+        self.selection_panel.refresh_pool()
+        self.diagnosis_panel.refresh_pool()
+        self.pool_panel.refresh_list()
         self.status_var.set(f"股票池已更新: {len(self.pool_list)} 只")
 
     def _set_running(self, running: bool):
