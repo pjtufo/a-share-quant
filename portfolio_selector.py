@@ -2373,7 +2373,7 @@ def search_stocks(query: str, limit: int = 10) -> list[dict]:
 
         hits = []
         for _, r in df[mask].head(limit).iterrows():
-            hits.append({"code": code_str.loc[r.name], "name": str(r.name), "market": str(r.get("market", _market_type(str(r.code))))})
+            hits.append({"code": code_str.loc[_], "name": str(r.get("name", "")), "market": str(r.get("market", _market_type(str(r.get("code", code_str.loc[_])))))})
         if hits:
             return hits
     except Exception:
