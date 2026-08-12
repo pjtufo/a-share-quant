@@ -2072,6 +2072,46 @@ def plot_diagnosis_charts(code: str, df: pd.DataFrame, holders_df: pd.DataFrame,
 
 COLORS_PRICE = ["#2196F3", "#FF9800", "#4CAF50", "#F44336", "#9C27B0", "#FFEB3B"]
 
+# 股票搜索索引（懒加载）
+_STOCK_INDEX: pd.DataFrame | None = None
+
+
+def _ensure_stock_index() -> pd.DataFrame:
+    """懒加载全 A 股代码名称索引"""
+    global _STOCK_INDEX
+    if _STOCK_INDEX is None:
+        try:
+            _STOCK_INDEX = ak.stock_info_a_code_name()
+        except Exception:
+            _STOCK_INDEX = pd.DataFrame(columns=["code", "name"])
+    return _STOCK_INDEX
+
+
+def search_stocks(query: str, limit: int = 10) -> list[dict]:
+    """
+    模糊搜索股票，支持：
+    - 代码前缀/完整代码：输入 600 可匹配 600519...
+    - 中文名称包含：输入 茅台 可匹配贵州茅台
+    - 不区分大小写
+    返回 [{"code": "600519", "name": "贵州茅台"}, ...]
+    """
+    q = str(query).strip()
+    if not q:
+        return []
+    df = _ensure_stock_index()
+    if df.empty:
+        return []
+    q_lower = q.lower()
+    try:
+        mask = (
+            df["code"].str.startswith(q)
+            | df["name"].str.contains(re.escape(q), case=False, na=False)
+        )
+        hits = df[mask].head(limit)
+        return [{"code": str(r.code), "name": str(r.name)} for r in hits.itertuples(index=False)]
+    except Exception:
+        return []
+
 
 if __name__ == "__main__":
     main()

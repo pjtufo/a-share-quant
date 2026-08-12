@@ -28,7 +28,7 @@ from portfolio_selector import (
     analyze_fund_flow_trend, analyze_holder_trend, analyze_north_flow_trend,
     analyze_ma_alignment, analyze_pattern_double, analyze_support_resistance,
     fetch_stock_basic_info, fetch_sector_info, plot_diagnosis_charts,
-    _clean_code,
+    _clean_code, search_stocks,
 )
 
 # ──────────────────────────────────────────────────────────────
@@ -136,13 +136,71 @@ class PoolPanel(ttk.Frame):
         text = self.entry.get().strip()
         if not text:
             return
-        codes = [c.strip() for c in text.replace("，", ",").split(",") if c.strip()]
-        for code in codes:
-            if code not in self.pool_list:
+        raw_items = [c.strip() for c in text.replace("，", ",").split(",") if c.strip()]
+        added = []
+        skipped = []
+        for raw in raw_items:
+            code = _clean_code(raw)
+            if not code:
+                continue
+            if code in self.pool_list:
+                skipped.append(code)
+                continue
+            # 如果输入看起来像代码，直接添加；否则模糊查询
+            if re.fullmatch(r"\d{6}", code):
                 self.pool_list.append(code)
+                added.append(code)
+            else:
+                hits = search_stocks(code, limit=8)
+                if not hits:
+                    skipped.append(raw)
+                elif len(hits) == 1:
+                    c = hits[0]["code"]
+                    if c not in self.pool_list:
+                        self.pool_list.append(c)
+                        added.append(c)
+                    else:
+                        skipped.append(c)
+                else:
+                    selected = self._pick_from_suggestions(hits)
+                    if selected:
+                        if selected not in self.pool_list:
+                            self.pool_list.append(selected)
+                            added.append(selected)
+                        else:
+                            skipped.append(selected)
         self.entry.delete(0, tk.END)
         self.refresh_list()
         self.on_change()
+        if added:
+            self.status_label.config(text=f"已添加: {', '.join(added)}")
+        if skipped:
+            self.status_label.config(text=f"已添加: {', '.join(added)}; 跳过/未找到: {', '.join(skipped)}")
+
+    def _pick_from_suggestions(self, hits: list[dict]) -> str | None:
+        """弹窗让用户从候选中选择一只股票"""
+        pick = {"value": None}
+        top = tk.Toplevel(self.winfo_toplevel())
+        top.title("选择股票")
+        top.geometry("420x320")
+        top.transient(self.winfo_toplevel())
+        top.grab_set()
+
+        ttk.Label(top, text="找到多只候选，请点击选择：").pack(pady=5)
+        listbox = tk.Listbox(top, font=("Microsoft YaHei", 10))
+        listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        for h in hits:
+            listbox.insert(tk.END, f"{h['code']}  {h['name']}")
+
+        def on_select(_):
+            sel = listbox.curselection()
+            if sel:
+                pick["value"] = hits[sel[0]]["code"]
+            top.destroy()
+
+        ttk.Button(top, text="确定", command=on_select).pack(pady=5)
+        self.winfo_toplevel().wait_window(top)
+        return pick["value"]
 
     def remove_selected(self):
         for item in self.tree.selection():
