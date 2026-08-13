@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 一揽子股票选股组合分析系统 - GUI 界面 v2
 """
@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tray_icon import TrayIcon
 from portfolio_selector import (
     fetch_price, fetch_name, score_stock, build_portfolio,
     fetch_macro, score_macro, fetch_news,
@@ -1412,6 +1413,35 @@ class PortfolioApp:
                               anchor=tk.W, bg=COLORS["bg_secondary"], fg=COLORS["text_secondary"],
                               font=("Microsoft YaHei", 9))
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # ── 系统托盘集成 ──
+        self._tray = TrayIcon(
+            root,
+            title="一揽子股票选股组合分析系统",
+            on_restore=self._restore_from_tray,
+            on_exit=self._quit_from_tray,
+        )
+        self._tray.start()
+        root.protocol("WM_DELETE_WINDOW", self._minimize_to_tray)
+
+    def _minimize_to_tray(self):
+        self._tray.notify("最小化", "程序已最小化到系统托盘\n双击恢复，右键查看更多")
+        self.root.withdraw()
+
+    def _restore_from_tray(self):
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+        except Exception:
+            pass
+
+    def _quit_from_tray(self):
+        try:
+            self._tray.stop()
+        except Exception:
+            pass
+        self.root.destroy()
 
     def _build_ui(self):
         header = tk.Frame(self.root, bg=COLORS["bg_secondary"], height=60)
