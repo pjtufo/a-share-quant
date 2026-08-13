@@ -1399,6 +1399,10 @@ class PortfolioApp:
     def __init__(self, root):
         self.root = root
         self.root.title("一揽子股票选股组合分析系统")
+        try:
+            self.root.iconbitmap(os.path.join(self.report_dir, "data", "cache", "money.ico"))
+        except Exception:
+            pass
         self.root.geometry("1500x900")
         self.root.minsize(1300, 700)
 
@@ -1415,9 +1419,12 @@ class PortfolioApp:
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
         # ── 系统托盘集成 ──
+        icon_dir = os.path.join(self.report_dir, "data", "cache")
         self._tray = TrayIcon(
             root,
             title="一揽子股票选股组合分析系统",
+            icon_path=os.path.join(icon_dir, "datanaly.ico"),
+            flash_icon_path=os.path.join(icon_dir, "target.ico"),
             on_restore=self._restore_from_tray,
             on_exit=self._quit_from_tray,
         )

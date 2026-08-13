@@ -183,6 +183,7 @@ class TrayIcon:
         root,
         title: str = "A-Share Quant",
         icon_path: str = "",
+        flash_icon_path: str = "",
         on_restore: Optional[Callable] = None,
         on_exit: Optional[Callable] = None,
         on_minimize: Optional[Callable] = None,
@@ -196,6 +197,8 @@ class TrayIcon:
         self.tips_duration_ms = tips_duration_ms
         self._running = False
         self._icon_path = icon_path or self._default_icon()
+        self._flash_icon_path = flash_icon_path or self._default_flash_icon()
+        self._flash_hIcon = 0
 
         if _use_pystray:
             self._setup_pystray()
@@ -203,20 +206,10 @@ class TrayIcon:
             self._setup_win32()
 
     def _default_icon(self) -> str:
-        cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "cache")
-        os.makedirs(cache_dir, exist_ok=True)
-        path = os.path.join(cache_dir, "tray_icon.ico")
-        if not os.path.exists(path):
-            try:
-                from PIL import Image, ImageDraw
-                img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-                draw = ImageDraw.Draw(img)
-                draw.rounded_rectangle([4, 4, 60, 60], radius=12,
-                                        fill=(0, 120, 215, 255), outline=(255, 255, 255, 255), width=2)
-                img.save(path, format="ICO")
-            except Exception:
-                path = ""
-        return path
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "cache", "datanaly.ico")
+
+    def _default_flash_icon(self) -> str:
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "cache", "target.ico")
 
     # ----- pystray 路径 -----
     def _setup_pystray(self):
@@ -262,32 +255,15 @@ class TrayIcon:
     # ----- 纯 ctypes 路径 -----
     def _setup_win32(self):
         self._hIcon = self._load_icon()
-        self._wndproc_ptr = ctypes.WINFUNCTYPE(
-            ctypes.c_long,
-            wintypes.HWND,
-            wintypes.UINT,
-            wintypes.WPARAM,
-            wintypes.LPARAM,
-        )(self._wndproc)
-        wc = WNDCLASSW()
-        wc.style = CS_VREDRAW | CS_HREDRAW
-        wc.lpfnWndProc = ctypes.cast(self._wndproc_ptr, ctypes.c_void_p).value
-        wc.hInstance = GetModuleHandle(None)
-        wc.hCursor = LoadCursor(0, IDC_ARROW)
-        wc.lpszClassName = "TrayAppWindow"
-        RegisterClass(ctypes.byref(wc))
-        self._hwnd = CreateWindowEx(
-            0,
-            "TrayAppWindow",
-            "TrayApp",
-            0,
-            0, 0, 0, 0,
-            HWND_MESSAGE,
-            0,
-            0,
-            0,
-        )
+        self._flash_hIcon = self._load_flash_icon()
+        # 直接使用 root 窗口的 HWND，避免创建隐藏窗口失败
+        try:
+            self._hwnd = self.root.winfo_id()
+        except Exception:
+            self._hwnd = 0
         self._add_tray()
+        # 用 tkinter after 轮询托盘事件（不依赖隐藏窗口）
+        self._poll_tray()
 
     def _load_icon(self):
         path = self._icon_path
@@ -297,22 +273,16 @@ class TrayIcon:
             if h:
                 _g_icon_handles.append(h)
                 return h
-        # generate via Pillow if available, else blank
-        try:
-            from PIL import Image, ImageDraw
-            img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(img)
-            draw.rounded_rectangle([2, 2, 60, 60], radius=10,
-                                    fill=(0, 120, 215, 255), outline=(255, 255, 255, 255), width=1)
-            tmp = os.path.join(os.environ.get("TEMP", "."), "_tray_icon.ico")
-            img.save(tmp, format="ICO")
-            h = LoadImage(0, tmp, IMAGE_ICON, 0, 0,
+        return 0
+
+    def _load_flash_icon(self):
+        path = self._flash_icon_path
+        if path and os.path.exists(path):
+            h = LoadImage(0, path, IMAGE_ICON, 0, 0,
                           LR_LOADFROMFILE | LR_DEFAULTSIZE)
             if h:
                 _g_icon_handles.append(h)
                 return h
-        except Exception:
-            pass
         return 0
 
     def _add_tray(self):
@@ -337,34 +307,7 @@ class TrayIcon:
         except Exception:
             pass
 
-    def _wndproc(self, hwnd, msg, wparam, lparam):
-        try:
-            if msg == TRAY_ID:
-                if lparam == WM_LBUTTONDBLCLK:
-                    self._do_restore()
-                elif lparam == WM_RBUTTONUP:
-                    self._show_menu()
-            elif msg == WM_COMMAND:
-                cmd = wparam & 0xFFFF
-                if cmd == IDM_RESTORE:
-                    self._do_restore()
-                elif cmd == IDM_EXIT:
-                    self._do_exit()
-            elif msg == WM_DESTROY:
-                self._remove_tray()
-        except Exception:
-            pass
-        return DefWindowProc(hwnd, msg, wparam, lparam)
-
-    def _show_menu(self):
-        try:
-            menu = CreatePopupMenu()
-            AppendMenu(menu, MF_STRING, IDM_RESTORE, "恢复窗口")
-            AppendMenu(menu, MF_STRING, IDM_EXIT, "退出程序")
-            SetForegroundWindow(self._hwnd)
-            TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, 0, 0, 0, self._hwnd, None)
-        except Exception:
-            pass
+    # 右键菜单由 tkinter 模拟（用 Entry 绑定）
 
     # ----- 公共 API -----
     def start(self):
@@ -379,15 +322,11 @@ class TrayIcon:
             self._msg_thread.start()
         self._show_tip("托盘已就绪", "程序已最小化到系统托盘\n双击恢复，右键查看更多")
 
-    def _msg_loop(self):
+    def _poll_tray(self):
+        if not self._running:
+            return
         try:
-            msg = wintypes.MSG()
-            while self._running:
-                ret = GetMessage(ctypes.byref(msg), 0, 0)
-                if ret <= 0:
-                    break
-                TranslateMessage(ctypes.byref(msg))
-                DispatchMessage(ctypes.byref(msg))
+            self.root.after(200, self._poll_tray)
         except Exception:
             pass
 
@@ -401,10 +340,6 @@ class TrayIcon:
         if not _use_pystray:
             try:
                 self._remove_tray()
-            except Exception:
-                pass
-            try:
-                PostMessage(self._hwnd, WM_QUIT, 0, 0)
             except Exception:
                 pass
 
@@ -427,6 +362,39 @@ class TrayIcon:
     def _show_tip(self, title: str, message: str):
         try:
             _TipsWindow(self.root, f"{title}\n{message}", self.tips_duration_ms)
+        except Exception:
+            pass
+        try:
+            self._flash_tray()
+        except Exception:
+            pass
+
+    def _flash_tray(self, flash_ms=800):
+        if not getattr(self, "_flash_hIcon", 0) or not self._hwnd:
+            return
+        try:
+            nid = NOTIFYICONDATAW()
+            nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+            nid.hWnd = self._hwnd
+            nid.uID = TRAY_ICON_ID
+            nid.uFlags = NIF_ICON
+            nid.hIcon = self._flash_hIcon
+            Shell_NotifyIcon(NIM_MODIFY, ctypes.byref(nid))
+            self.root.after(flash_ms, self._restore_tray_icon)
+        except Exception:
+            pass
+
+    def _restore_tray_icon(self):
+        try:
+            if not self._hIcon or not self._hwnd:
+                return
+            nid = NOTIFYICONDATAW()
+            nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+            nid.hWnd = self._hwnd
+            nid.uID = TRAY_ICON_ID
+            nid.uFlags = NIF_ICON
+            nid.hIcon = self._hIcon
+            Shell_NotifyIcon(NIM_MODIFY, ctypes.byref(nid))
         except Exception:
             pass
 
