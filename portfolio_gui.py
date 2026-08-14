@@ -1175,7 +1175,7 @@ class DiagnosisPanel(ttk.Frame):
         self._current_code = code
         self._current_chart_paths = chart_paths or {}
         if self._current_chart_paths.get("diagnosis"):
-            self.root.after(100, self._show_chart)
+            self.winfo_toplevel().after(100, self._show_chart)
         else:
             self.chart_label.config(text="暂无图表数据")
 
