@@ -8,4 +8,6 @@ build/
 *.csv
 *.md
 !README.md
+!DESIGN.md
+!CHANGELOG.md
 quant.py.bak
