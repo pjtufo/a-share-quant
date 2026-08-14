@@ -2224,37 +2224,62 @@ def plot_diagnosis_charts(code: str, df: pd.DataFrame, holders_df: pd.DataFrame,
 
         # 1. K线图
         ax1 = axes[0, 0]
-        ax1.plot(df["date"], df["close"], label="Close", color=COLORS_PRICE[0])
-        ax1.fill_between(df["date"], df["low"], df["high"], alpha=0.3, color=COLORS_PRICE[1])
-        ax1.set_title("K线图")
-        ax1.legend()
+        ax1.plot(df["date"], df["close"], label="收盘价", color=COLORS_PRICE[0], linewidth=1.5)
+        ax1.fill_between(df["date"], df["low"], df["high"], alpha=0.2, color=COLORS_PRICE[1], label="高低区间")
+        ax1.set_title("① 价格走势 (折线图)", fontsize=11, fontweight="bold", loc="left", color=COLORS_PRICE[0])
+        ax1.set_ylabel("价格 (元)")
+        ax1.legend(fontsize=8)
+        ax1.tick_params(axis="x", rotation=30, labelsize=8)
+        ax1.grid(True, alpha=0.3)
 
         # 2. 股东数量
         ax2 = axes[0, 1]
         if holders_df is not None and not holders_df.empty:
-            ax2.plot(holders_df.iloc[:, 0], holders_df.iloc[:, 1], color=COLORS_PRICE[2])
-            ax2.set_title("股东数量")
-            ax2.tick_params(axis="x", rotation=30)
+            ax2.plot(holders_df.iloc[:, 0], holders_df.iloc[:, 1], marker="o", markersize=3,
+                     label="股东户数", color=COLORS_PRICE[2], linewidth=1.5)
+            ax2.set_title("② 股东数量 (折线图)", fontsize=11, fontweight="bold", loc="left", color=COLORS_PRICE[2])
+            ax2.set_ylabel("股东户数")
+            ax2.legend(fontsize=8)
+            ax2.tick_params(axis="x", rotation=30, labelsize=8)
+            ax2.grid(True, alpha=0.3)
+        else:
+            ax2.text(0.5, 0.5, "数据暂无", ha="center", va="center", transform=ax2.transAxes)
+            ax2.set_title("② 股东数量 (折线图)", fontsize=11, fontweight="bold", loc="left")
 
         # 3. 大单净流入
         ax3 = axes[1, 0]
         if fund_df is not None and not fund_df.empty:
-            ax3.bar(fund_df.iloc[:, 0], fund_df.iloc[:, 1], color=COLORS_PRICE[3])
-            ax3.set_title("大单净流入")
-            ax3.tick_params(axis="x", rotation=30)
+            colors_bar = [COLORS_PRICE[3] if v >= 0 else COLORS_PRICE[5] for v in fund_df.iloc[:, 1]]
+            ax3.bar(fund_df.iloc[:, 0], fund_df.iloc[:, 1], color=colors_bar, label="大单净流入", alpha=0.8)
+            ax3.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+            ax3.set_title("③ 大单净流入 (柱状图)", fontsize=11, fontweight="bold", loc="left", color=COLORS_PRICE[3])
+            ax3.set_ylabel("净流入 (万元)")
+            ax3.legend(fontsize=8)
+            ax3.tick_params(axis="x", rotation=30, labelsize=8)
+            ax3.grid(True, alpha=0.3, axis="y")
+        else:
+            ax3.text(0.5, 0.5, "数据暂无", ha="center", va="center", transform=ax3.transAxes)
+            ax3.set_title("③ 大单净流入 (柱状图)", fontsize=11, fontweight="bold", loc="left")
 
         # 4. 筹码集中度
         ax4 = axes[1, 1]
         if cyq_df is not None and not cyq_df.empty:
-            ax4.plot(cyq_df["日期"], cyq_df["90集中度"], label="90%集中度", color=COLORS_PRICE[4])
-            ax4.plot(cyq_df["日期"], cyq_df["70集中度"], label="70%集中度", color=COLORS_PRICE[5])
-            ax4.set_title("筹码集中度")
-            ax4.legend()
-            ax4.tick_params(axis="x", rotation=30)
+            ax4.plot(cyq_df["日期"], cyq_df["90集中度"], marker="s", markersize=3,
+                     label="90%集中度", color=COLORS_PRICE[4], linewidth=1.5)
+            ax4.plot(cyq_df["日期"], cyq_df["70集中度"], marker="^", markersize=3,
+                     label="70%集中度", color=COLORS_PRICE[5], linewidth=1.5)
+            ax4.set_title("④ 筹码集中度 (折线图)", fontsize=11, fontweight="bold", loc="left", color=COLORS_PRICE[4])
+            ax4.set_ylabel("集中度")
+            ax4.legend(fontsize=8)
+            ax4.tick_params(axis="x", rotation=30, labelsize=8)
+            ax4.grid(True, alpha=0.3)
+        else:
+            ax4.text(0.5, 0.5, "数据暂无", ha="center", va="center", transform=ax4.transAxes)
+            ax4.set_title("④ 筹码集中度 (折线图)", fontsize=11, fontweight="bold", loc="left")
 
         plt.tight_layout()
         chart_path = f"{save_prefix}_diagnosis.png"
-        plt.savefig(chart_path, dpi=100, bbox_inches="tight")
+        plt.savefig(chart_path, dpi=150, bbox_inches="tight")
         plt.close()
         paths["diagnosis"] = chart_path
     except Exception as e:
