@@ -842,11 +842,14 @@ class DiagnosisPanel(ttk.Frame):
                                    bg=COLORS["bg_primary"], fg=COLORS["text_primary"],
                                    relief=tk.FLAT, padx=10, pady=10)
         self.result_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.result_text.bind("<Double-Button-1>", self._open_diagnosis_popup)
         self.result_text.tag_config("title", font=("Microsoft YaHei", 12, "bold"), foreground=COLORS["accent"])
         self.result_text.tag_config("section", font=("Microsoft YaHei", 10, "bold"), foreground=COLORS["accent"])
         self.result_text.tag_config("positive", foreground=COLORS["success"])
         self.result_text.tag_config("negative", foreground=COLORS["danger"])
         self.result_text.tag_config("neutral", foreground=COLORS["text_secondary"])
+        # 双击诊断文本放大查看
+        self.result_text.bind("<Double-1>", self._open_diagnosis_popup)
 
         # 图表区域
         chart_frame = ttk.LabelFrame(right, text="📈 诊断图表")
@@ -971,6 +974,33 @@ class DiagnosisPanel(ttk.Frame):
                     text=f"诊断失败: {str(e)[:60]}", fg=COLORS["danger"]))
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _open_diagnosis_popup(self, event=None):
+        """双击诊断文本弹出放大窗口"""
+        popup = tk.Toplevel(self)
+        popup.title("个股诊断详情")
+        popup.geometry("900x700")
+        popup.configure(bg=COLORS["bg_primary"])
+
+        txt = tk.Text(popup, wrap=tk.WORD, font=("Consolas", 11),
+                       bg=COLORS["bg_primary"], fg=COLORS["text_primary"],
+                       relief=tk.FLAT, padx=15, pady=15)
+        txt.pack(fill=tk.BOTH, expand=True)
+        txt.tag_config("title", font=("Microsoft YaHei", 14, "bold"), foreground=COLORS["accent"])
+        txt.tag_config("section", font=("Microsoft YaHei", 11, "bold"), foreground=COLORS["accent"])
+        txt.tag_config("positive", foreground=COLORS["success"])
+        txt.tag_config("negative", foreground=COLORS["danger"])
+        txt.tag_config("neutral", foreground=COLORS["text_secondary"])
+
+        content = self.result_text.get("1.0", tk.END)
+        for tag in ("title", "section", "positive", "negative", "neutral"):
+            txt.tag_config(tag, font=self.result_text.tag_cget(tag, "font"),
+                           foreground=self.result_text.tag_cget(tag, "foreground"))
+        txt.insert("1.0", content)
+        txt.config(state=tk.DISABLED)
+
+        popup.bind("<Escape>", lambda e: popup.destroy())
+        txt.bind("<Escape>", lambda e: popup.destroy())
 
     def _show_diagnosis(self, code: str, result: dict, basic: dict = None, sector: dict = None, chart_paths: dict = None):
         self.result_text.delete("1.0", tk.END)
