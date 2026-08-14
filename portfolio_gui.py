@@ -1209,6 +1209,33 @@ class DiagnosisPanel(ttk.Frame):
         else:
             self.chart_label.config(text="暂无图表数据")
 
+    def _open_chart_popup(self, event=None):
+        """双击图表弹出放大窗口"""
+        path = self._current_chart_paths.get("diagnosis")
+        if not path or not os.path.exists(path):
+            return
+        popup = tk.Toplevel(self)
+        popup.title(f"图表放大: {os.path.basename(path)}")
+        popup.geometry("1000x750")
+        popup.configure(bg=COLORS["bg_primary"])
+
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open(path)
+            # 适应弹窗大小
+            w = popup.winfo_screenwidth() * 0.9
+            h = popup.winfo_screenheight() * 0.85
+            img.thumbnail((int(w), int(h)), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            lbl = tk.Label(popup, image=photo, bg=COLORS["bg_primary"])
+            lbl.image = photo
+            lbl.pack(fill=tk.BOTH, expand=True)
+        except Exception as e:
+            lbl = tk.Label(popup, text=f"无法加载图表: {e}", bg=COLORS["bg_primary"])
+            lbl.pack(expand=True)
+
+        popup.bind("<Escape>", lambda e: popup.destroy())
+
     def _show_chart(self):
         # 清空图表区域
         for widget in self.chart_canvas_frame.winfo_children():
@@ -1232,6 +1259,7 @@ class DiagnosisPanel(ttk.Frame):
             lbl = tk.Label(self.chart_canvas_frame, image=photo, bg=COLORS["bg_primary"])
             lbl.image = photo
             lbl.pack(anchor=tk.CENTER, expand=True)
+            lbl.bind("<Double-Button-1>", self._open_chart_popup)
         except Exception:
             self.chart_label = tk.Label(self.chart_canvas_frame, text=f"图表: {path}",
                                        bg=COLORS["bg_primary"], fg=COLORS["text_secondary"],
